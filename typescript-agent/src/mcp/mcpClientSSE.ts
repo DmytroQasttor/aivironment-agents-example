@@ -2,9 +2,9 @@ import { EventSource } from "eventsource";
 
 const URL = process.env.MCP_SSE_URL!;
 
-export function connectMcpSSE(onMessage: (msg: any) => void) {
+export function connectMcpSSE(onMessage: (msg: unknown) => void) {
   const es = new EventSource(URL, {
-    fetch: (input, init) =>
+    fetch: (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
       fetch(input, {
         ...init,
         headers: { ...init?.headers },

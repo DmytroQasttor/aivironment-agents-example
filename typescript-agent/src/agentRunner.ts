@@ -1,55 +1,17 @@
-import { openai } from "./openai/openaiClient.js";
-import { buildAgentPrompt } from "./agents/taskAgent";
-import { mcpListTools, mcpCallTool } from "./mcp/mcpClientHttp";
+import type { A2AForwardRequest } from "./types/a2a";
+import { runOpsCoordinate } from "./agents/opsCoordinate";
+import { AgentError } from "./utils/agentError";
 
-export async function runAgent(task: any) {
-  const history: any[] = [];
-  let nextPrompt = buildAgentPrompt(task);
-
-  while (true) {
-    const promptParts = history.map((h) => ({
-      role: h.role,
-      content: h.content,
-    }));
-
-    promptParts.push({ role: "user", content: nextPrompt });
-
-    const response = await openai.responses.create({
-      model: process.env.OPENAI_MODEL!,
-      input: promptParts,
-    });
-
-    const text = response.output_text.trim();
-
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch (err) {
-      throw new Error("Agent output not JSON");
-    }
-
-    if (parsed.action === "tool") {
-      if (parsed.tool === "listTools") {
-        const tools = await mcpListTools();
-        history.push({
-          role: "tool",
-          content: JSON.stringify(tools),
-        });
-      } else {
-        const toolResult = await mcpCallTool(parsed.tool, parsed.arguments);
-        history.push({
-          role: "tool",
-          content: JSON.stringify(toolResult),
-        });
-      }
-      nextPrompt = "";
-      continue;
-    }
-
-    if (parsed.action === "final") {
-      return parsed.result;
-    }
-
-    throw new Error("Unknown action");
+export async function runAgent(task: A2AForwardRequest) {
+  switch (task.intent) {
+    case "ops.coordinate":
+      return runOpsCoordinate(task);
+    default:
+      throw new AgentError(
+        "INTENT_UNSUPPORTED",
+        `Unsupported intent: ${task.intent}`,
+        false,
+        400,
+      );
   }
 }
