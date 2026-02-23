@@ -50,20 +50,26 @@ export async function a2aHandler(req: Request, res: Response) {
     });
   }
   const task = envelopeValidation.value;
+  const correlationId =
+    typeof task.context?.correlation_id === "string" && task.context.correlation_id.length > 0
+      ? task.context.correlation_id
+      : task.task_id;
+  const depth =
+    typeof task.context?.depth === "number" ? task.context.depth : 0;
 
   try {
     await verifyInboundAuth({
       headers: req.headers,
       rawBody: bodyRaw,
       taskId: task.task_id,
-      correlationId: task.context.correlation_id,
+      correlationId,
     });
 
     logInfo("A2A request accepted", {
       task_id: task.task_id,
-      correlation_id: task.context.correlation_id,
+      correlation_id: correlationId,
       intent: task.intent,
-      depth: task.context.depth,
+      depth,
     });
 
     const result = await runAgent(task);
@@ -86,7 +92,7 @@ export async function a2aHandler(req: Request, res: Response) {
 
     logError("A2A request failed", {
       task_id: task.task_id,
-      correlation_id: task.context.correlation_id,
+      correlation_id: correlationId,
       code: agentError.code,
       message: agentError.message,
     });

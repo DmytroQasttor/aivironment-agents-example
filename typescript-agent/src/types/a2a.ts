@@ -26,16 +26,17 @@ export interface A2AForwardRequest {
     agent_id: string;
     agent_name: string;
     workspace_id: string;
-    workspace_name: string;
+    workspace_name?: string;
   };
   intent: string;
   payload: unknown;
   context: {
-    project_id: string | null;
-    correlation_id: string;
-    depth: number;
-    max_depth: number;
-    parent_task_id: string | null;
+    project_id?: string | null;
+    correlation_id?: string | null;
+    depth?: number | null;
+    max_depth?: number | null;
+    parent_task_id?: string | null;
+    [key: string]: unknown;
   };
 }
 

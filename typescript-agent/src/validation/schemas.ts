@@ -22,7 +22,7 @@ const a2aForwardSchema = {
     timestamp: { type: "string", minLength: 1 },
     source: {
       type: "object",
-      required: ["agent_id", "agent_name", "workspace_id", "workspace_name"],
+      required: ["agent_id", "agent_name", "workspace_id"],
       properties: {
         agent_id: { type: "string", minLength: 1 },
         agent_name: { type: "string", minLength: 1 },
@@ -32,23 +32,16 @@ const a2aForwardSchema = {
       additionalProperties: true,
     },
     intent: { type: "string", minLength: 1 },
-    payload: { type: "object" },
+    payload: {},
     context: {
       type: "object",
-      required: [
-        "project_id",
-        "correlation_id",
-        "depth",
-        "max_depth",
-        "parent_task_id",
-      ],
       properties: {
         project_id: {
           anyOf: [{ type: "string" }, { type: "null" }],
         },
-        correlation_id: { type: "string", minLength: 1 },
-        depth: { type: "integer", minimum: 0 },
-        max_depth: { type: "integer", minimum: 0 },
+        correlation_id: { anyOf: [{ type: "string", minLength: 1 }, { type: "null" }] },
+        depth: { anyOf: [{ type: "integer", minimum: 0 }, { type: "number", minimum: 0 }, { type: "null" }] },
+        max_depth: { anyOf: [{ type: "integer", minimum: 0 }, { type: "number", minimum: 0 }, { type: "null" }] },
         parent_task_id: {
           anyOf: [{ type: "string" }, { type: "null" }],
         },
