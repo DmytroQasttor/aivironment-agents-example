@@ -69,6 +69,8 @@ cp .env.example .env
 - `AGENT_DID`
 - `AGENT_AUTH_MODE` (`simple` or `advanced`)
 - `MCP_HTTP_URL`
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL`
 
 For `simple` mode:
 - `AGENT_SECRET`

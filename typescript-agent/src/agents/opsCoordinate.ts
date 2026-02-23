@@ -2,72 +2,14 @@ import type { A2AForwardRequest, OpsCoordinatePayload, OpsCoordinateResult } fro
 import { mcpDelegateTask, mcpGetRouteDetails, mcpGetTaskContext, mcpListReachableRoutes } from "../mcp/mcpClientHttp";
 import { AgentError } from "../utils/agentError";
 import { logInfo } from "../utils/log";
-import { validateOpsCoordinateInput, validateOpsCoordinateOutput } from "../validation/schemas";
+import { validateOpsCoordinateInput, validateOpsCoordinateLlmDecision, validateOpsCoordinateOutput } from "../validation/schemas";
+import { getOpenAIModel, openai } from "../openai/openaiClient";
 
 interface RouteCandidate {
   connection_slug?: string;
   target_agent_did?: string;
   intent?: string;
   active?: boolean;
-}
-
-function getPriorityWeight(priority: OpsCoordinatePayload["priority"]) {
-  switch (priority) {
-    case "low":
-      return 0.2;
-    case "medium":
-      return 0.4;
-    case "high":
-      return 0.7;
-    case "critical":
-      return 1;
-  }
-}
-
-function computeScore(input: OpsCoordinatePayload) {
-  const base = 0.35;
-  const risk = input.metadata.risk_score * 0.4;
-  const priority = getPriorityWeight(input.priority) * 0.25;
-  return Number(Math.min(1, base + risk + priority).toFixed(2));
-}
-
-function buildLocalPlan(input: OpsCoordinatePayload): OpsCoordinateResult {
-  const score = computeScore(input);
-  const actions = input.constraints.map((constraint, index) => ({
-    id: `A${index + 1}`,
-    type: "constraint_mitigation",
-    owner: input.metadata.owner,
-    note: `Mitigate constraint: ${constraint}`,
-  }));
-
-  actions.unshift(
-    {
-      id: "A0",
-      type: "planning_kickoff",
-      owner: input.metadata.owner,
-      note: `Initiate execution planning in ${input.metadata.region}`,
-    },
-    {
-      id: "A0.5",
-      type: "risk_review",
-      owner: input.metadata.owner,
-      note: `Perform risk review at score ${input.metadata.risk_score.toFixed(2)}`,
-    },
-  );
-
-  const dueText = input.due_date ? ` Delivery due by ${input.due_date}.` : "";
-  return {
-    plan: `Coordinate objective "${input.objective}" at priority ${input.priority}.${dueText}`,
-    actions,
-    score,
-  };
-}
-
-function shouldDelegate(input: OpsCoordinatePayload, request: A2AForwardRequest) {
-  if (request.context.depth >= request.context.max_depth) {
-    return false;
-  }
-  return input.priority === "critical" || input.metadata.risk_score >= 0.8;
 }
 
 function normalizeRouteCandidates(value: unknown): RouteCandidate[] {
@@ -92,6 +34,68 @@ function pickRoute(routes: RouteCandidate[]) {
   });
 }
 
+async function decideWithLlm(params: {
+  request: A2AForwardRequest;
+  payload: OpsCoordinatePayload;
+  taskContext: unknown;
+  routes: RouteCandidate[];
+}) {
+  const model = getOpenAIModel();
+  const input = [
+    "You are Delivery Planning Coordinator.",
+    "Return only valid JSON with fields:",
+    "- decision: \"local\" | \"delegate\"",
+    "- plan: string",
+    "- actions: array",
+    "- optional score: number from 0 to 1",
+    "- optional delegation_reason: string",
+    "- optional selected_route: { connection_slug: string, target_agent_did: string }",
+    "Prefer delegate for critical/high-risk if route exists and depth allows.",
+    "",
+    JSON.stringify(
+      {
+        task_id: params.request.task_id,
+        intent: params.request.intent,
+        context: params.request.context,
+        payload: params.payload,
+        task_context: params.taskContext,
+        reachable_routes: params.routes,
+      },
+      null,
+      2,
+    ),
+  ].join("\n");
+
+  const response = await openai.responses.create({
+    model,
+    input,
+  });
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(response.output_text);
+  } catch {
+    throw new AgentError(
+      "EXECUTION_FAILED",
+      "LLM decision output was not valid JSON",
+      true,
+      502,
+    );
+  }
+
+  const decisionValidation = validateOpsCoordinateLlmDecision(parsed);
+  if (!decisionValidation.ok) {
+    throw new AgentError(
+      "EXECUTION_FAILED",
+      `LLM decision schema invalid: ${decisionValidation.errors.join("; ")}`,
+      true,
+      502,
+    );
+  }
+
+  return decisionValidation.value;
+}
+
 export async function runOpsCoordinate(request: A2AForwardRequest) {
   const inputValidation = validateOpsCoordinateInput(request.payload);
   if (!inputValidation.ok) {
@@ -104,9 +108,31 @@ export async function runOpsCoordinate(request: A2AForwardRequest) {
   }
 
   const payload = inputValidation.value;
-  const result = buildLocalPlan(payload);
+  const taskContext = await mcpGetTaskContext(
+    request.task_id,
+    request.context.correlation_id,
+  );
+  const reachableRoutesRaw = normalizeRouteCandidates(
+    await mcpListReachableRoutes("ops.coordinate"),
+  );
+  const reachableRoutes = reachableRoutesRaw.filter((route) => route.active !== false);
 
-  if (!shouldDelegate(payload, request)) {
+  const llmDecision = await decideWithLlm({
+    request,
+    payload,
+    taskContext,
+    routes: reachableRoutes,
+  });
+
+  const result: OpsCoordinateResult = {
+    plan: llmDecision.plan,
+    actions: llmDecision.actions as Array<Record<string, unknown>>,
+    ...(typeof llmDecision.score === "number" ? { score: llmDecision.score } : {}),
+  };
+
+  const depthLimited = request.context.depth >= request.context.max_depth;
+  const shouldDelegate = llmDecision.decision === "delegate" && !depthLimited;
+  if (!shouldDelegate) {
     const outputValidation = validateOpsCoordinateOutput(result);
     if (!outputValidation.ok) {
       throw new AgentError(
@@ -119,20 +145,21 @@ export async function runOpsCoordinate(request: A2AForwardRequest) {
     return outputValidation.value;
   }
 
-  logInfo("Delegation criteria met", {
+  logInfo("LLM requested delegation", {
     task_id: request.task_id,
     correlation_id: request.context.correlation_id,
     depth: request.context.depth,
+    delegation_reason: llmDecision.delegation_reason ?? "unspecified",
   });
 
-  const taskContext = await mcpGetTaskContext(
-    request.task_id,
-    request.context.correlation_id,
-  );
-  const reachableRoutes = normalizeRouteCandidates(
-    await mcpListReachableRoutes("ops.coordinate"),
-  );
-  const selectedRoute = pickRoute(reachableRoutes);
+  const preferredRoute = llmDecision.selected_route
+    ? reachableRoutes.find(
+        (r) =>
+          r.connection_slug === llmDecision.selected_route?.connection_slug &&
+          r.target_agent_did === llmDecision.selected_route?.target_agent_did,
+      )
+    : undefined;
+  const selectedRoute = preferredRoute ?? pickRoute(reachableRoutes);
 
   if (!selectedRoute || !selectedRoute.connection_slug || !selectedRoute.target_agent_did) {
     logInfo("No active route found, falling back to local completion", {
@@ -163,7 +190,7 @@ export async function runOpsCoordinate(request: A2AForwardRequest) {
     payload: {
       ...payload,
       delegated_by: process.env.AGENT_DID ?? "unknown",
-      delegation_reason: "critical_priority_or_high_risk",
+      delegation_reason: llmDecision.delegation_reason ?? "llm_delegate",
       source_task_context: taskContext,
     },
     context: {

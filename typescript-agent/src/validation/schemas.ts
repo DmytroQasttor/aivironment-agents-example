@@ -109,9 +109,37 @@ const opsCoordinateOutputSchema = {
   additionalProperties: true,
 } as const;
 
+const opsCoordinateLlmDecisionSchema = {
+  type: "object",
+  required: ["decision", "plan", "actions"],
+  properties: {
+    decision: {
+      type: "string",
+      enum: ["local", "delegate"],
+    },
+    plan: { type: "string", minLength: 1 },
+    actions: { type: "array" },
+    score: { type: "number", minimum: 0, maximum: 1 },
+    delegation_reason: { type: "string" },
+    selected_route: {
+      type: "object",
+      required: ["connection_slug", "target_agent_did"],
+      properties: {
+        connection_slug: { type: "string", minLength: 1 },
+        target_agent_did: { type: "string", minLength: 1 },
+      },
+      additionalProperties: true,
+    },
+  },
+  additionalProperties: true,
+} as const;
+
 const validateA2AForwardInternal = ajv.compile(a2aForwardSchema);
 const validateOpsCoordinateInputInternal = ajv.compile(opsCoordinateInputSchema);
 const validateOpsCoordinateOutputInternal = ajv.compile(opsCoordinateOutputSchema);
+const validateOpsCoordinateLlmDecisionInternal = ajv.compile(
+  opsCoordinateLlmDecisionSchema,
+);
 
 export function validateA2AForwardEnvelope(value: unknown): {
   ok: true;
@@ -168,4 +196,46 @@ export function validateOpsCoordinateOutput(value: unknown): {
     };
   }
   return { ok: true, value: value as OpsCoordinateResult };
+}
+
+export function validateOpsCoordinateLlmDecision(value: unknown): {
+  ok: true;
+  value: {
+    decision: "local" | "delegate";
+    plan: string;
+    actions: unknown[];
+    score?: number;
+    delegation_reason?: string;
+    selected_route?: {
+      connection_slug: string;
+      target_agent_did: string;
+    };
+  };
+} | {
+  ok: false;
+  errors: string[];
+} {
+  const ok = validateOpsCoordinateLlmDecisionInternal(value);
+  if (!ok) {
+    return {
+      ok: false,
+      errors: (validateOpsCoordinateLlmDecisionInternal.errors ?? []).map(
+        (e) => `${e.instancePath || "/"} ${e.message}`,
+      ),
+    };
+  }
+  return {
+    ok: true,
+    value: value as {
+      decision: "local" | "delegate";
+      plan: string;
+      actions: unknown[];
+      score?: number;
+      delegation_reason?: string;
+      selected_route?: {
+        connection_slug: string;
+        target_agent_did: string;
+      };
+    },
+  };
 }
