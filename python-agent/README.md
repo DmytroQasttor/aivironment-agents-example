@@ -8,9 +8,14 @@ Intent implemented:
 Behavior:
 - Verifies inbound platform auth (`simple` HMAC or `advanced` JWT/JWKS).
 - Validates strict `a2a_forward` envelope and `ops.audit` input schema.
-- Uses OpenAI to produce audit findings/recommendations.
+- Uses OpenAI to produce audit findings/recommendations and delegation decision.
+- Uses MCP tools for context/route discovery:
+  - `get_task_context`
+  - `list_reachable_routes`
+  - `get_route_details`
+  - `delegate_task` (only when LLM decides and lineage depth allows)
 - Validates strict `ops.audit` output schema before returning.
-- Acts as terminal chain specialist (no delegation by default).
+- Acts as terminal specialist by default, with optional LLM-driven delegation.
 
 ## Local setup
 
@@ -34,13 +39,16 @@ Default port: `3300`.
 - `AGENT_AUTH_MODE` (`simple` or `advanced`)
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
+- `MCP_HTTP_URL`
 
 Simple mode:
 - `AGENT_SECRET`
+- `AGENT_API_KEY`
 
 Advanced mode:
 - `PLATFORM_JWKS_URL`
-- optional `PLATFORM_JWT_ISSUER`
+- `AGENT_PRIVATE_KEY_PEM`
+- optional `PLATFORM_JWT_ISSUER`, `AGENT_SIGNATURE_ALGORITHM`, `AGENT_KEY_ID`
 
 ## Render deploy
 
