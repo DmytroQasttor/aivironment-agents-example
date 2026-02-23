@@ -1,0 +1,24 @@
+{
+  "name": "javascript-agent",
+  "version": "1.0.0",
+  "description": "Blueprint 02 external agent (Execution Task Coordinator)",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js"
+  },
+  "author": "Dmytro Qasttor <dmytro@qasttor.com>",
+  "license": "ISC",
+  "dependencies": {
+    "ajv": "^8.18.0",
+    "ajv-formats": "^3.0.1",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "jose": "^6.1.3",
+    "openai": "^6.22.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}
