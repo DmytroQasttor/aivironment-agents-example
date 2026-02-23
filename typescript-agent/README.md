@@ -1,36 +1,54 @@
-# TypeScript Agent Example
+# TypeScript Agent - Blueprint 01
 
-This folder contains a **Node.js + TypeScript** example agent for the Aivironment Agents Platform.
+This is a production-like external agent example for the Aivironment platform.
 
-Use this project as a starting point if you want to:
-- receive signed tasks from the platform,
-- run an LLM-based agent loop,
-- optionally call MCP tools,
-- return a normalized `a2a_response` payload.
+Implemented profile:
+- Name: `Delivery Planning Coordinator`
+- Intent: `ops.coordinate`
+- Purpose: turn a business objective into an execution-ready plan and optionally delegate through MCP routes.
 
-## What this example includes
+Use this agent to manually validate full platform workflow in UI:
+- inbound auth,
+- intent routing,
+- strict schema validation,
+- MCP route discovery,
+- delegation + lineage behavior,
+- normalized `a2a_response` output.
 
-- `POST /a2a` endpoint for platform task delivery
-- HMAC signature verification (`x-platform-signature`, `x-platform-timestamp`)
-- OpenAI Responses API integration
-- MCP JSON-RPC client helpers (`tools/list`, `tools/call`)
-- `GET /health` endpoint for health checks
+## Features
+
+- `POST /a2a` endpoint with strict `a2a_forward` envelope validation
+- Intent routing map (`ops.coordinate` implemented)
+- Dual inbound auth modes:
+  - `simple`: HMAC headers
+  - `advanced`: JWT verification via JWKS
+- Outbound auth for MCP calls (same auth family as platform)
+- MCP tool flow:
+  - `get_task_context`
+  - `list_reachable_routes`
+  - `get_route_details`
+  - `delegate_task`
+- Deterministic local planning result (`plan`, `actions`, `score`)
+- Structured failure envelope with error code/message/retryable
 
 ## Project structure
 
-- `src/server.ts`: Express app and route wiring
-- `src/handlers/a2aHandler.ts`: signed request handling + response mapping
-- `src/agentRunner.ts`: iterative agent execution loop
-- `src/agents/taskAgent.ts`: base prompt strategy
-- `src/mcp/mcpClientHttp.ts`: MCP HTTP JSON-RPC client
-- `src/utils/signature.ts`: HMAC verification helper
+- `src/server.ts` - Express app and routes
+- `src/handlers/a2aHandler.ts` - envelope validation, auth verification, response normalization
+- `src/agentRunner.ts` - intent router
+- `src/agents/opsCoordinate.ts` - Blueprint 01 intent logic + delegation policy
+- `src/validation/schemas.ts` - strict input/output schema validation
+- `src/auth/inboundAuth.ts` - simple/advanced inbound auth checks
+- `src/auth/outboundAuth.ts` - simple/advanced outbound headers/signing
+- `src/mcp/mcpClientHttp.ts` - MCP JSON-RPC transport + tool wrappers
+- `src/utils/signature.ts` - timing-safe HMAC verification
 
 ## Prerequisites
 
 - Node.js 18+
 - npm
-- OpenAI API key
-- (Optional) MCP server endpoint
+- platform credentials
+- MCP endpoint
 
 ## Setup
 
@@ -40,87 +58,94 @@ Use this project as a starting point if you want to:
 npm install
 ```
 
-2. Configure environment variables:
+2. Create local env file:
 
 ```bash
 cp .env.example .env
 ```
 
-Required values:
-- `OPENAI_API_KEY`
-- `OPENAI_MODEL` (example: `gpt-5.2-mini`)
-- `AGENT_SECRET` (must match your platform agent secret)
+3. Configure required values:
 
-Runtime URLs used by this code:
-- `MCP_HTTP_URL` (for MCP HTTP JSON-RPC)
-- `MCP_SSE_URL` (only needed if you use the SSE helper)
+- `AGENT_DID`
+- `AGENT_AUTH_MODE` (`simple` or `advanced`)
+- `MCP_HTTP_URL`
 
-3. Start in development mode:
+For `simple` mode:
+- `AGENT_SECRET`
+- `AGENT_API_KEY`
+
+For `advanced` mode:
+- `PLATFORM_JWKS_URL`
+- `PLATFORM_JWT_ISSUER` (optional but recommended)
+- `AGENT_PRIVATE_KEY_PEM`
+- `AGENT_SIGNATURE_ALGORITHM` (default `RS256`)
+- `AGENT_KEY_ID` (optional)
+
+4. Run agent:
 
 ```bash
 npm run dev
 ```
 
-Default port is `3000` (configurable with `PORT`).
+Default port: `3000`.
 
-## Production build
+## Build / run
 
 ```bash
 npm run build
 npm start
 ```
 
-## Platform request contract
+## Request contract (inbound)
 
-The `POST /a2a` handler expects:
-- raw JSON body,
-- `x-platform-timestamp` header,
-- `x-platform-signature` header in format `sha256=<hex>`.
+`POST /a2a` expects a platform-forwarded payload with:
+- `type: "a2a_forward"`
+- `task_id`
+- `intent`
+- `payload`
+- `context` (`correlation_id`, `depth`, `max_depth`, `parent_task_id`, ...)
 
-Signature input:
-- `"<timestamp>.<rawBody>"` hashed with HMAC-SHA256 using `AGENT_SECRET`.
+Supported intent:
+- `ops.coordinate`
 
-If valid, the handler runs the agent and returns:
+## Response contract (outbound)
+
+Success:
 
 ```json
 {
   "type": "a2a_response",
-  "task_id": "...",
+  "task_id": "same-task-id",
   "status": "completed",
-  "result": {}
-}
-```
-
-On failure, it returns:
-
-```json
-{
-  "type": "a2a_response",
-  "task_id": "...",
-  "status": "failed",
-  "error": {
-    "code": "PROCESSING_FAILED",
-    "message": "..."
+  "result": {
+    "plan": "...",
+    "actions": [],
+    "score": 0.85
   }
 }
 ```
 
-## Local test tips
+Failure:
 
-- Health check:
+```json
+{
+  "type": "a2a_response",
+  "task_id": "same-task-id",
+  "status": "failed",
+  "error": {
+    "code": "PAYLOAD_INVALID",
+    "message": "...",
+    "retryable": false
+  }
+}
+```
+
+## Local check
 
 ```bash
 curl http://localhost:3000/health
 ```
 
-- For `/a2a`, send exact raw JSON used for signature generation.
-- Keep timestamp fresh (the verifier accepts a 5-minute window).
-
-## Notes for users
-
-This is an intentionally minimal example meant for integration clarity, not production hardening. Before production use, add:
-- structured logging,
-- retries/timeouts/circuit breaking,
-- stricter input schema validation,
-- observability and tracing,
-- robust error taxonomy.
+Notes:
+- Use the exact raw JSON body when generating simple-mode HMAC signatures.
+- Keep timestamp fresh (5-minute validation window).
