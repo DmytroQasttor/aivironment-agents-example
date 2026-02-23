@@ -1,99 +1,180 @@
 import type { A2AForwardRequest, OpsCoordinatePayload, OpsCoordinateResult } from "../types/a2a";
-import { mcpDelegateTask, mcpGetRouteDetails, mcpGetTaskContext, mcpListReachableRoutes } from "../mcp/mcpClientHttp";
+import { mcpCallTool } from "../mcp/mcpClientHttp";
 import { AgentError } from "../utils/agentError";
-import { logInfo } from "../utils/log";
-import { validateOpsCoordinateInput, validateOpsCoordinateLlmDecision, validateOpsCoordinateOutput } from "../validation/schemas";
+import { validateOpsCoordinateInput, validateOpsCoordinateOutput } from "../validation/schemas";
 import { getOpenAIModel, openai } from "../openai/openaiClient";
 
-interface RouteCandidate {
-  connection_slug?: string;
-  target_agent_did?: string;
-  intent?: string;
-  active?: boolean;
+const toolDefinitions = [
+  {
+    type: "function",
+    name: "get_task_context",
+    description: "Fetch context and lineage details for the current task.",
+    parameters: {
+      type: "object",
+      required: ["task_id", "correlation_id"],
+      properties: {
+        task_id: { type: "string" },
+        correlation_id: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "list_reachable_routes",
+    description: "List active routes this agent can use for delegation.",
+    parameters: {
+      type: "object",
+      required: ["intent"],
+      properties: {
+        intent: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "get_route_details",
+    description: "Get details and schema expectations for a selected route.",
+    parameters: {
+      type: "object",
+      required: ["connection_slug", "target_agent_did"],
+      properties: {
+        connection_slug: { type: "string" },
+        target_agent_did: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "delegate_task",
+    description:
+      "Delegate to a target agent. Use only with discovered active routes and correct lineage context.",
+    parameters: {
+      type: "object",
+      required: [
+        "connection_slug",
+        "target_agent_did",
+        "intent",
+        "payload",
+        "context",
+      ],
+      properties: {
+        connection_slug: { type: "string" },
+        target_agent_did: { type: "string" },
+        intent: { type: "string" },
+        payload: { type: "object" },
+        context: { type: "object" },
+      },
+      additionalProperties: false,
+    },
+  },
+];
+
+function ensureValidOutput(result: unknown) {
+  const outputValidation = validateOpsCoordinateOutput(result);
+  if (!outputValidation.ok) {
+    throw new AgentError(
+      "OUTPUT_INVALID",
+      `Result failed schema validation: ${outputValidation.errors.join("; ")}`,
+      false,
+      500,
+    );
+  }
+  return outputValidation.value;
 }
 
-function normalizeRouteCandidates(value: unknown): RouteCandidate[] {
-  if (Array.isArray(value)) {
-    return value as RouteCandidate[];
+function parseJsonArgs(rawArgs: unknown) {
+  if (!rawArgs || typeof rawArgs !== "string") {
+    return {} as Record<string, unknown>;
   }
-  if (value && typeof value === "object" && Array.isArray((value as { routes?: unknown }).routes)) {
-    return (value as { routes: RouteCandidate[] }).routes;
+  try {
+    return JSON.parse(rawArgs) as Record<string, unknown>;
+  } catch {
+    throw new AgentError("EXECUTION_FAILED", "Model produced invalid tool arguments", true, 502);
   }
-  return [];
 }
 
-function pickRoute(routes: RouteCandidate[]) {
-  return routes.find((r) => {
-    if (!r.connection_slug || !r.target_agent_did) {
-      return false;
-    }
-    if (typeof r.active === "boolean" && !r.active) {
-      return false;
-    }
-    return true;
-  });
+async function runToolCall(call: any) {
+  const args = parseJsonArgs(call.arguments);
+  switch (call.name) {
+    case "get_task_context":
+    case "list_reachable_routes":
+    case "get_route_details":
+    case "delegate_task":
+      return mcpCallTool(call.name, args, args.target_agent_did as string | undefined);
+    default:
+      throw new AgentError(
+        "EXECUTION_FAILED",
+        `Unsupported tool requested: ${call.name}`,
+        false,
+        400,
+      );
+  }
 }
 
 async function decideWithLlm(params: {
   request: A2AForwardRequest;
   payload: OpsCoordinatePayload;
-  taskContext: unknown;
-  routes: RouteCandidate[];
 }) {
   const model = getOpenAIModel();
-  const input = [
+  const initialPrompt = [
     "You are Delivery Planning Coordinator.",
-    "Return only valid JSON with fields:",
-    "- decision: \"local\" | \"delegate\"",
-    "- plan: string",
-    "- actions: array",
-    "- optional score: number from 0 to 1",
-    "- optional delegation_reason: string",
-    "- optional selected_route: { connection_slug: string, target_agent_did: string }",
-    "Prefer delegate for critical/high-risk if route exists and depth allows.",
+    "You may use MCP tools to decide whether to delegate or complete locally.",
+    "Do not hardcode targets; discover routes via tools and delegate only via active discovered route.",
+    "Depth guardrail: only delegate when context.depth < context.max_depth.",
+    "When finished, respond with JSON object only:",
+    '{ "plan": string, "actions": array, "score"?: number }',
     "",
     JSON.stringify(
       {
         task_id: params.request.task_id,
         intent: params.request.intent,
-        context: params.request.context,
         payload: params.payload,
-        task_context: params.taskContext,
-        reachable_routes: params.routes,
+        context: params.request.context,
       },
       null,
       2,
     ),
   ].join("\n");
 
-  const response = await openai.responses.create({
+  let response: any = await openai.responses.create({
     model,
-    input,
+    input: initialPrompt,
+    tools: toolDefinitions as any,
   });
 
-  let parsed: unknown;
+  for (let i = 0; i < 12; i += 1) {
+    const outputItems = Array.isArray(response.output) ? response.output : [];
+    const toolCalls = outputItems.filter((item: any) => item.type === "function_call");
+    if (toolCalls.length === 0) {
+      break;
+    }
+
+    const toolOutputs = [];
+    for (const call of toolCalls) {
+      const result = await runToolCall(call);
+      toolOutputs.push({
+        type: "function_call_output",
+        call_id: call.call_id,
+        output: JSON.stringify(result),
+      });
+    }
+
+    response = await openai.responses.create({
+      model,
+      previous_response_id: response.id,
+      input: toolOutputs as any,
+      tools: toolDefinitions as any,
+    });
+  }
+
   try {
-    parsed = JSON.parse(response.output_text);
+    return JSON.parse(response.output_text);
   } catch {
-    throw new AgentError(
-      "EXECUTION_FAILED",
-      "LLM decision output was not valid JSON",
-      true,
-      502,
-    );
+    throw new AgentError("EXECUTION_FAILED", "LLM final output was not valid JSON", true, 502);
   }
-
-  const decisionValidation = validateOpsCoordinateLlmDecision(parsed);
-  if (!decisionValidation.ok) {
-    throw new AgentError(
-      "EXECUTION_FAILED",
-      `LLM decision schema invalid: ${decisionValidation.errors.join("; ")}`,
-      true,
-      502,
-    );
-  }
-
-  return decisionValidation.value;
 }
 
 export async function runOpsCoordinate(request: A2AForwardRequest) {
@@ -108,114 +189,12 @@ export async function runOpsCoordinate(request: A2AForwardRequest) {
   }
 
   const payload = inputValidation.value;
-  const taskContext = await mcpGetTaskContext(
-    request.task_id,
-    request.context.correlation_id,
-  );
-  const reachableRoutesRaw = normalizeRouteCandidates(
-    await mcpListReachableRoutes("ops.coordinate"),
-  );
-  const reachableRoutes = reachableRoutesRaw.filter((route) => route.active !== false);
-
-  const llmDecision = await decideWithLlm({
-    request,
-    payload,
-    taskContext,
-    routes: reachableRoutes,
-  });
+  const llmResult = await decideWithLlm({ request, payload });
 
   const result: OpsCoordinateResult = {
-    plan: llmDecision.plan,
-    actions: llmDecision.actions as Array<Record<string, unknown>>,
-    ...(typeof llmDecision.score === "number" ? { score: llmDecision.score } : {}),
+    plan: llmResult.plan,
+    actions: llmResult.actions,
+    ...(typeof llmResult.score === "number" ? { score: llmResult.score } : {}),
   };
-
-  const depthLimited = request.context.depth >= request.context.max_depth;
-  const shouldDelegate = llmDecision.decision === "delegate" && !depthLimited;
-  if (!shouldDelegate) {
-    const outputValidation = validateOpsCoordinateOutput(result);
-    if (!outputValidation.ok) {
-      throw new AgentError(
-        "OUTPUT_INVALID",
-        `Result failed schema validation: ${outputValidation.errors.join("; ")}`,
-        false,
-        500,
-      );
-    }
-    return outputValidation.value;
-  }
-
-  logInfo("LLM requested delegation", {
-    task_id: request.task_id,
-    correlation_id: request.context.correlation_id,
-    depth: request.context.depth,
-    delegation_reason: llmDecision.delegation_reason ?? "unspecified",
-  });
-
-  const preferredRoute = llmDecision.selected_route
-    ? reachableRoutes.find(
-        (r) =>
-          r.connection_slug === llmDecision.selected_route?.connection_slug &&
-          r.target_agent_did === llmDecision.selected_route?.target_agent_did,
-      )
-    : undefined;
-  const selectedRoute = preferredRoute ?? pickRoute(reachableRoutes);
-
-  if (!selectedRoute || !selectedRoute.connection_slug || !selectedRoute.target_agent_did) {
-    logInfo("No active route found, falling back to local completion", {
-      task_id: request.task_id,
-      correlation_id: request.context.correlation_id,
-    });
-    const outputValidation = validateOpsCoordinateOutput(result);
-    if (!outputValidation.ok) {
-      throw new AgentError(
-        "OUTPUT_INVALID",
-        `Result failed schema validation: ${outputValidation.errors.join("; ")}`,
-        false,
-        500,
-      );
-    }
-    return outputValidation.value;
-  }
-
-  await mcpGetRouteDetails(
-    selectedRoute.connection_slug,
-    selectedRoute.target_agent_did,
-  );
-
-  await mcpDelegateTask({
-    connectionSlug: selectedRoute.connection_slug,
-    targetAgentDid: selectedRoute.target_agent_did,
-    intent: "ops.coordinate",
-    payload: {
-      ...payload,
-      delegated_by: process.env.AGENT_DID ?? "unknown",
-      delegation_reason: llmDecision.delegation_reason ?? "llm_delegate",
-      source_task_context: taskContext,
-    },
-    context: {
-      correlation_id: request.context.correlation_id,
-      parent_task_id: request.task_id,
-      depth: request.context.depth + 1,
-      max_depth: request.context.max_depth,
-      project_id: request.context.project_id,
-    },
-  });
-
-  result.actions.push({
-    id: `A${result.actions.length + 1}`,
-    type: "delegation",
-    note: `Delegated to ${selectedRoute.target_agent_did} via ${selectedRoute.connection_slug}`,
-  });
-
-  const outputValidation = validateOpsCoordinateOutput(result);
-  if (!outputValidation.ok) {
-    throw new AgentError(
-      "OUTPUT_INVALID",
-      `Result failed schema validation: ${outputValidation.errors.join("; ")}`,
-      false,
-      500,
-    );
-  }
-  return outputValidation.value;
+  return ensureValidOutput(result);
 }

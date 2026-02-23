@@ -23,12 +23,13 @@ Use this agent to manually validate full platform workflow in UI:
   - `simple`: HMAC headers
   - `advanced`: JWT verification via JWKS
 - Outbound auth for MCP calls (same auth family as platform)
-- MCP tool flow:
+- OpenAI Node SDK tool-calling loop (`responses.create`) for runtime decisions
+- MCP tools exposed to model:
   - `get_task_context`
   - `list_reachable_routes`
   - `get_route_details`
   - `delegate_task`
-- Deterministic local planning result (`plan`, `actions`, `score`)
+- Model decides local completion vs delegation at runtime
 - Structured failure envelope with error code/message/retryable
 
 ## Project structure
@@ -36,7 +37,7 @@ Use this agent to manually validate full platform workflow in UI:
 - `src/server.ts` - Express app and routes
 - `src/handlers/a2aHandler.ts` - envelope validation, auth verification, response normalization
 - `src/agentRunner.ts` - intent router
-- `src/agents/opsCoordinate.ts` - Blueprint 01 intent logic + delegation policy
+- `src/agents/opsCoordinate.ts` - Blueprint 01 intent logic + SDK tool-calling agent loop
 - `src/validation/schemas.ts` - strict input/output schema validation
 - `src/auth/inboundAuth.ts` - simple/advanced inbound auth checks
 - `src/auth/outboundAuth.ts` - simple/advanced outbound headers/signing
