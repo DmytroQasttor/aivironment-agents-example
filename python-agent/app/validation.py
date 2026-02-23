@@ -4,20 +4,31 @@ _format_checker = FormatChecker()
 
 A2A_FORWARD_SCHEMA = {
     "type": "object",
-    "required": ["type", "task_id", "intent", "payload", "context"],
+    "required": ["type", "task_id", "timestamp", "source", "intent", "payload", "context"],
     "properties": {
         "type": {"const": "a2a_forward"},
         "task_id": {"type": "string", "minLength": 1},
+        "timestamp": {"type": "string", "minLength": 1},
+        "source": {
+            "type": "object",
+            "required": ["agent_id", "agent_name", "workspace_id"],
+            "properties": {
+                "agent_id": {"type": "string", "minLength": 1},
+                "agent_name": {"type": "string", "minLength": 1},
+                "workspace_id": {"type": "string", "minLength": 1},
+                "workspace_name": {"type": "string", "minLength": 1},
+            },
+            "additionalProperties": True,
+        },
         "intent": {"type": "string", "minLength": 1},
-        "payload": {"type": "object"},
+        "payload": {},
         "context": {
             "type": "object",
-            "required": ["correlation_id", "parent_task_id", "depth", "max_depth"],
             "properties": {
-                "correlation_id": {"type": "string", "minLength": 1},
+                "correlation_id": {"type": ["string", "null"]},
                 "parent_task_id": {"type": ["string", "null"]},
-                "depth": {"type": "integer", "minimum": 0},
-                "max_depth": {"type": "integer", "minimum": 0},
+                "depth": {"type": ["integer", "number", "null"], "minimum": 0},
+                "max_depth": {"type": ["integer", "number", "null"], "minimum": 0},
             },
             "additionalProperties": True,
         },

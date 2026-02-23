@@ -55,20 +55,27 @@ async def a2a_handler(request: Request) -> JSONResponse:
         )
 
     task = parsed_body
+    context = task.get("context", {}) if isinstance(task.get("context"), dict) else {}
+    correlation_id = (
+        context.get("correlation_id")
+        if isinstance(context.get("correlation_id"), str) and context.get("correlation_id")
+        else task["task_id"]
+    )
+    depth = context.get("depth") if isinstance(context.get("depth"), (int, float)) else 0
     try:
         verify_inbound_auth(
             headers=dict(request.headers),
             raw_body=raw_body,
             task_id=task["task_id"],
-            correlation_id=task["context"]["correlation_id"],
+            correlation_id=correlation_id,
         )
 
         log_info(
             "A2A request accepted",
             task_id=task["task_id"],
-            correlation_id=task["context"]["correlation_id"],
+            correlation_id=correlation_id,
             intent=task["intent"],
-            depth=task["context"]["depth"],
+            depth=depth,
         )
 
         result = run_agent(task)
@@ -88,7 +95,7 @@ async def a2a_handler(request: Request) -> JSONResponse:
         log_error(
             "A2A request failed",
             task_id=task["task_id"],
-            correlation_id=task["context"]["correlation_id"],
+            correlation_id=correlation_id,
             code=agent_error.code,
             message=agent_error.message,
         )
