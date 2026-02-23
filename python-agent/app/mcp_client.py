@@ -56,7 +56,7 @@ def _json_rpc_request(
     return data["result"]
 
 
-def _mcp_call_tool(
+def mcp_call_tool(
     name: str, args: dict[str, Any], target_agent_did: str | None = None
 ) -> Any:
     return _json_rpc_request(
@@ -65,17 +65,17 @@ def _mcp_call_tool(
 
 
 def mcp_get_task_context(task_id: str, correlation_id: str) -> Any:
-    return _mcp_call_tool(
+    return mcp_call_tool(
         "get_task_context", {"task_id": task_id, "correlation_id": correlation_id}
     )
 
 
 def mcp_list_reachable_routes(intent: str) -> Any:
-    return _mcp_call_tool("list_reachable_routes", {"intent": intent})
+    return mcp_call_tool("list_reachable_routes", {"intent": intent})
 
 
 def mcp_get_route_details(connection_slug: str, target_agent_did: str) -> Any:
-    return _mcp_call_tool(
+    return mcp_call_tool(
         "get_route_details",
         {
             "connection_slug": connection_slug,
@@ -91,7 +91,7 @@ def mcp_delegate_task(
     payload: dict[str, Any],
     context: dict[str, Any],
 ) -> Any:
-    return _mcp_call_tool(
+    return mcp_call_tool(
         "delegate_task",
         {
             "connection_slug": connection_slug,

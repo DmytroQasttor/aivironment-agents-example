@@ -8,7 +8,7 @@ Intent implemented:
 Behavior:
 - Verifies inbound platform auth (`simple` HMAC or `advanced` JWT/JWKS).
 - Validates strict `a2a_forward` envelope and `ops.audit` input schema.
-- Uses OpenAI to produce audit findings/recommendations and delegation decision.
+- Uses OpenAI Python SDK tool-calling loop (`responses.create`) for runtime decisions.
 - Uses MCP tools for context/route discovery:
   - `get_task_context`
   - `list_reachable_routes`
