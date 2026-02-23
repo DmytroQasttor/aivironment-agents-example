@@ -1,50 +1,12 @@
 import { getOpenAIClient, getOpenAIModel } from "../openai/openaiClient.js";
 import {
-  mcpDelegateTask,
-  mcpGetRouteDetails,
-  mcpGetTaskContext,
-  mcpListReachableRoutes,
+  mcpCallTool,
 } from "../mcp/mcpClientHttp.js";
 import { AgentError } from "../utils/agentError.js";
-import { logInfo } from "../utils/log.js";
 import {
   validateOpsCoordinateInput,
-  validateOpsCoordinateLlmDecision,
   validateOpsCoordinateOutput,
 } from "../validation/schemas.js";
-
-function normalizeRouteCandidates(value) {
-  if (Array.isArray(value)) {
-    return value;
-  }
-  if (value && typeof value === "object" && Array.isArray(value.routes)) {
-    return value.routes;
-  }
-  return [];
-}
-
-function routeSupportsAudit(route) {
-  if (!route || !route.connection_slug || !route.target_agent_did) {
-    return false;
-  }
-  if (typeof route.active === "boolean" && !route.active) {
-    return false;
-  }
-
-  if (route.intent === "ops.audit") {
-    return true;
-  }
-
-  if (Array.isArray(route.allowed_intents)) {
-    return route.allowed_intents.includes("ops.audit");
-  }
-
-  return true;
-}
-
-function pickAuditRoute(routes) {
-  return routes.find(routeSupportsAudit);
-}
 
 function ensureValidOutput(result) {
   const outputValidation = validateOpsCoordinateOutput(result);
@@ -59,18 +21,107 @@ function ensureValidOutput(result) {
   return outputValidation.value;
 }
 
-async function decideWithLlm({ request, payload, taskContext, routes }) {
+const toolDefinitions = [
+  {
+    type: "function",
+    name: "get_task_context",
+    description: "Fetch context and lineage details for the current task.",
+    parameters: {
+      type: "object",
+      required: ["task_id", "correlation_id"],
+      properties: {
+        task_id: { type: "string" },
+        correlation_id: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "list_reachable_routes",
+    description: "List active routes this agent can use for delegation.",
+    parameters: {
+      type: "object",
+      required: ["intent"],
+      properties: {
+        intent: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "get_route_details",
+    description: "Get details and schema expectations for a selected route.",
+    parameters: {
+      type: "object",
+      required: ["connection_slug", "target_agent_did"],
+      properties: {
+        connection_slug: { type: "string" },
+        target_agent_did: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "delegate_task",
+    description:
+      "Delegate to a target agent. Use only with discovered active routes and correct lineage context.",
+    parameters: {
+      type: "object",
+      required: [
+        "connection_slug",
+        "target_agent_did",
+        "intent",
+        "payload",
+        "context",
+      ],
+      properties: {
+        connection_slug: { type: "string" },
+        target_agent_did: { type: "string" },
+        intent: { type: "string" },
+        payload: { type: "object" },
+        context: { type: "object" },
+      },
+      additionalProperties: false,
+    },
+  },
+];
+
+function parseJsonArgs(rawArgs) {
+  if (!rawArgs || typeof rawArgs !== "string") {
+    return {};
+  }
+  try {
+    return JSON.parse(rawArgs);
+  } catch {
+    throw new AgentError("EXECUTION_FAILED", "Model produced invalid tool arguments", true, 502);
+  }
+}
+
+async function runToolCall(call) {
+  const args = parseJsonArgs(call.arguments);
+  switch (call.name) {
+    case "get_task_context":
+    case "list_reachable_routes":
+    case "get_route_details":
+    case "delegate_task":
+      return mcpCallTool(call.name, args, args.target_agent_did);
+    default:
+      throw new AgentError("EXECUTION_FAILED", `Unsupported tool requested: ${call.name}`, false, 400);
+  }
+}
+
+async function decideWithLlm({ request, payload }) {
   const model = getOpenAIModel();
-  const prompt = [
+  const initialPrompt = [
     "You are Execution Task Coordinator.",
-    "Return only valid JSON with keys:",
-    "- plan: string",
-    "- actions: array",
-    "- optional score: number 0..1",
-    "- delegate_compliance: boolean",
-    "- optional delegation_reason: string",
-    "- optional compliance_payload: object for ops.audit intent",
-    "Set delegate_compliance=true when compliance or risk should be audited and depth allows.",
+    "You may use MCP tools to decide whether to delegate or complete locally.",
+    "Do not hardcode targets; discover routes via tools and delegate only via active discovered route.",
+    "Depth guardrail: only delegate when context.depth < context.max_depth.",
+    "When finished, respond with JSON object only:",
+    "{ \"plan\": string, \"actions\": array, \"score\"?: number }",
     "",
     JSON.stringify(
       {
@@ -78,8 +129,6 @@ async function decideWithLlm({ request, payload, taskContext, routes }) {
         intent: request.intent,
         payload,
         context: request.context,
-        task_context: taskContext,
-        reachable_routes: routes,
       },
       null,
       2,
@@ -87,51 +136,43 @@ async function decideWithLlm({ request, payload, taskContext, routes }) {
   ].join("\n");
 
   const openai = getOpenAIClient();
-  const response = await openai.responses.create({
+  let response = await openai.responses.create({
     model,
-    input: prompt,
+    input: initialPrompt,
+    tools: toolDefinitions,
   });
 
-  let parsed;
+  for (let i = 0; i < 12; i += 1) {
+    const toolCalls = (response.output ?? []).filter(
+      (item) => item.type === "function_call",
+    );
+    if (toolCalls.length === 0) {
+      break;
+    }
+
+    const toolOutputs = [];
+    for (const call of toolCalls) {
+      const result = await runToolCall(call);
+      toolOutputs.push({
+        type: "function_call_output",
+        call_id: call.call_id,
+        output: JSON.stringify(result),
+      });
+    }
+
+    response = await openai.responses.create({
+      model,
+      previous_response_id: response.id,
+      input: toolOutputs,
+      tools: toolDefinitions,
+    });
+  }
+
   try {
-    parsed = JSON.parse(response.output_text);
+    return JSON.parse(response.output_text);
   } catch {
-    throw new AgentError(
-      "EXECUTION_FAILED",
-      "LLM decision output was not valid JSON",
-      true,
-      502,
-    );
+    throw new AgentError("EXECUTION_FAILED", "LLM final output was not valid JSON", true, 502);
   }
-
-  const validated = validateOpsCoordinateLlmDecision(parsed);
-  if (!validated.ok) {
-    throw new AgentError(
-      "EXECUTION_FAILED",
-      `LLM decision schema invalid: ${validated.errors.join("; ")}`,
-      true,
-      502,
-    );
-  }
-  return validated.value;
-}
-
-function buildCompliancePayload({ llmDecision, payload }) {
-  if (llmDecision.compliance_payload && typeof llmDecision.compliance_payload === "object") {
-    return llmDecision.compliance_payload;
-  }
-
-  return {
-    objective: payload.objective,
-    priority: payload.priority,
-    constraints: payload.constraints,
-    metadata: payload.metadata,
-    compliance_focus: [
-      "regulatory_risk",
-      "data_handling",
-      "operational_controls",
-    ],
-  };
 }
 
 export async function runOpsCoordinate(request) {
@@ -147,72 +188,16 @@ export async function runOpsCoordinate(request) {
   }
 
   const payload = inputValidation.value;
-  // 2) Discover runtime context + reachable routes from MCP instead of hardcoding.
-  const taskContext = await mcpGetTaskContext(
-    request.task_id,
-    request.context.correlation_id,
-  );
-  const reachableRoutes = normalizeRouteCandidates(
-    await mcpListReachableRoutes("ops.audit"),
-  ).filter((route) => route.active !== false);
-
-  const llmDecision = await decideWithLlm({
+  const llmResult = await decideWithLlm({
     request,
     payload,
-    taskContext,
-    routes: reachableRoutes,
   });
 
   const result = {
-    plan: llmDecision.plan,
-    actions: llmDecision.actions,
-    ...(typeof llmDecision.score === "number" ? { score: llmDecision.score } : {}),
+    plan: llmResult.plan,
+    actions: llmResult.actions,
+    ...(typeof llmResult.score === "number" ? { score: llmResult.score } : {}),
   };
-
-  // 3) Delegate only when both LLM asks for it and lineage depth still allows it.
-  const canDelegate = request.context.depth < request.context.max_depth;
-  const wantsDelegate = llmDecision.delegate_compliance === true;
-  if (!wantsDelegate || !canDelegate) {
-    return ensureValidOutput(result);
-  }
-
-  // 4) Route selection remains platform-driven: only active discovered routes.
-  const selectedRoute = pickAuditRoute(reachableRoutes);
-  if (!selectedRoute) {
-    logInfo("No ops.audit route found, completing locally", {
-      task_id: request.task_id,
-      correlation_id: request.context.correlation_id,
-    });
-    return ensureValidOutput(result);
-  }
-
-  await mcpGetRouteDetails(
-    selectedRoute.connection_slug,
-    selectedRoute.target_agent_did,
-  );
-
-  const compliancePayload = buildCompliancePayload({ llmDecision, payload });
-  await mcpDelegateTask({
-    connectionSlug: selectedRoute.connection_slug,
-    targetAgentDid: selectedRoute.target_agent_did,
-    intent: "ops.audit",
-    payload: compliancePayload,
-    context: {
-      correlation_id: request.context.correlation_id,
-      parent_task_id: request.task_id,
-      depth: request.context.depth + 1,
-      max_depth: request.context.max_depth,
-      project_id: request.context.project_id ?? null,
-    },
-  });
-
-  result.actions.push({
-    type: "delegation",
-    target_intent: "ops.audit",
-    connection_slug: selectedRoute.connection_slug,
-    target_agent_did: selectedRoute.target_agent_did,
-    reason: llmDecision.delegation_reason ?? "llm_delegate_compliance",
-  });
-
+  
   return ensureValidOutput(result);
 }

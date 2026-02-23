@@ -57,7 +57,7 @@ async function jsonRpcRequest(method, params, targetAgentDid) {
   return json.result;
 }
 
-async function mcpCallTool(name, args, targetAgentDid) {
+export async function mcpCallTool(name, args, targetAgentDid) {
   return jsonRpcRequest("tools/call", { name, args }, targetAgentDid);
 }
 

@@ -7,12 +7,13 @@ Intent implemented:
 
 Behavior:
 - Validates inbound `a2a_forward` request and auth (simple/advanced).
-- Uses LLM to decompose execution plan and decide compliance delegation.
-- Calls MCP tools in Blueprint 02 order:
+- Uses OpenAI Node SDK tool-calling loop (`responses.create`) for agent decisions.
+- Model decides whether to complete locally or delegate, and chooses target intent/payload via MCP tools.
+- Calls MCP tools when needed:
   - `get_task_context`
   - `list_reachable_routes`
   - `get_route_details`
-  - `delegate_task` (to `ops.audit` when selected)
+  - `delegate_task`
 - Returns strict `a2a_response` result format.
 
 ## Run
