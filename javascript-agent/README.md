@@ -3,7 +3,7 @@
 This folder contains Agent 02: **Execution Task Coordinator**.
 
 Intent implemented:
-- `ops.coordinate`
+- `ops.orchestrate`
 
 Behavior:
 - Validates inbound `a2a_forward` request and auth (simple/advanced).

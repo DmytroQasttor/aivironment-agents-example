@@ -4,6 +4,7 @@ import { AgentError } from "../utils/agentError.js";
 let nextId = 1;
 
 async function jsonRpcRequest(method, params, targetAgentDid) {
+  // One transport path for every MCP tool call keeps auth/retry/error behavior consistent.
   if (!process.env.MCP_HTTP_URL) {
     throw new AgentError("MCP_UNAVAILABLE", "MCP_HTTP_URL is not configured", true, 503);
   }

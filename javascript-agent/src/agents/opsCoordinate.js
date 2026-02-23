@@ -46,6 +46,19 @@ function pickAuditRoute(routes) {
   return routes.find(routeSupportsAudit);
 }
 
+function ensureValidOutput(result) {
+  const outputValidation = validateOpsCoordinateOutput(result);
+  if (!outputValidation.ok) {
+    throw new AgentError(
+      "OUTPUT_INVALID",
+      `Result failed schema validation: ${outputValidation.errors.join("; ")}`,
+      false,
+      500,
+    );
+  }
+  return outputValidation.value;
+}
+
 async function decideWithLlm({ request, payload, taskContext, routes }) {
   const model = getOpenAIModel();
   const prompt = [
@@ -122,6 +135,7 @@ function buildCompliancePayload({ llmDecision, payload }) {
 }
 
 export async function runOpsCoordinate(request) {
+  // 1) Strict input validation guards business logic from malformed payloads.
   const inputValidation = validateOpsCoordinateInput(request.payload);
   if (!inputValidation.ok) {
     throw new AgentError(
@@ -133,6 +147,7 @@ export async function runOpsCoordinate(request) {
   }
 
   const payload = inputValidation.value;
+  // 2) Discover runtime context + reachable routes from MCP instead of hardcoding.
   const taskContext = await mcpGetTaskContext(
     request.task_id,
     request.context.correlation_id,
@@ -154,37 +169,21 @@ export async function runOpsCoordinate(request) {
     ...(typeof llmDecision.score === "number" ? { score: llmDecision.score } : {}),
   };
 
+  // 3) Delegate only when both LLM asks for it and lineage depth still allows it.
   const canDelegate = request.context.depth < request.context.max_depth;
   const wantsDelegate = llmDecision.delegate_compliance === true;
   if (!wantsDelegate || !canDelegate) {
-    const outputValidation = validateOpsCoordinateOutput(result);
-    if (!outputValidation.ok) {
-      throw new AgentError(
-        "OUTPUT_INVALID",
-        `Result failed schema validation: ${outputValidation.errors.join("; ")}`,
-        false,
-        500,
-      );
-    }
-    return outputValidation.value;
+    return ensureValidOutput(result);
   }
 
+  // 4) Route selection remains platform-driven: only active discovered routes.
   const selectedRoute = pickAuditRoute(reachableRoutes);
   if (!selectedRoute) {
     logInfo("No ops.audit route found, completing locally", {
       task_id: request.task_id,
       correlation_id: request.context.correlation_id,
     });
-    const outputValidation = validateOpsCoordinateOutput(result);
-    if (!outputValidation.ok) {
-      throw new AgentError(
-        "OUTPUT_INVALID",
-        `Result failed schema validation: ${outputValidation.errors.join("; ")}`,
-        false,
-        500,
-      );
-    }
-    return outputValidation.value;
+    return ensureValidOutput(result);
   }
 
   await mcpGetRouteDetails(
@@ -215,14 +214,5 @@ export async function runOpsCoordinate(request) {
     reason: llmDecision.delegation_reason ?? "llm_delegate_compliance",
   });
 
-  const outputValidation = validateOpsCoordinateOutput(result);
-  if (!outputValidation.ok) {
-    throw new AgentError(
-      "OUTPUT_INVALID",
-      `Result failed schema validation: ${outputValidation.errors.join("; ")}`,
-      false,
-      500,
-    );
-  }
-  return outputValidation.value;
+  return ensureValidOutput(result);
 }

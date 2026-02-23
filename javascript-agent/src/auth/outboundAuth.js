@@ -1,21 +1,9 @@
 import crypto from "node:crypto";
 import { importPKCS8, SignJWT } from "jose";
 import { AgentError } from "../utils/agentError.js";
+import { getAgentDid, getAuthMode, requireEnv } from "../config/runtime.js";
 
 let privateKeyPromise = null;
-
-function getAuthMode() {
-  const mode = (process.env.AGENT_AUTH_MODE ?? "simple").toLowerCase();
-  if (mode !== "simple" && mode !== "advanced") {
-    throw new AgentError(
-      "CONFIG_INVALID",
-      "AGENT_AUTH_MODE must be either simple or advanced",
-      false,
-      500,
-    );
-  }
-  return mode;
-}
 
 function sha256Hex(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -33,15 +21,11 @@ function buildCanonicalString({ method, path, timestampMs, targetAgentDid, body 
 
 async function getPrivateKey(alg) {
   if (!privateKeyPromise) {
-    if (!process.env.AGENT_PRIVATE_KEY_PEM) {
-      throw new AgentError(
-        "CONFIG_INVALID",
-        "AGENT_PRIVATE_KEY_PEM is required for advanced auth mode",
-        false,
-        500,
-      );
-    }
-    privateKeyPromise = importPKCS8(process.env.AGENT_PRIVATE_KEY_PEM, alg);
+    const privatePem = requireEnv(
+      "AGENT_PRIVATE_KEY_PEM",
+      "AGENT_PRIVATE_KEY_PEM is required for advanced auth mode",
+    );
+    privateKeyPromise = importPKCS8(privatePem, alg);
   }
   return privateKeyPromise;
 }
@@ -52,22 +36,17 @@ export async function buildOutboundAuthHeaders({
   body,
   targetAgentDid,
 }) {
-  if (!process.env.AGENT_DID) {
-    throw new AgentError("CONFIG_INVALID", "AGENT_DID is required", false, 500);
-  }
+  // Outbound auth mirrors platform contract used by MCP/a2a calls.
+  const agentDid = getAgentDid();
 
   if (getAuthMode() === "simple") {
-    if (!process.env.AGENT_API_KEY) {
-      throw new AgentError(
-        "CONFIG_INVALID",
-        "AGENT_API_KEY is required for simple auth mode",
-        false,
-        500,
-      );
-    }
+    const apiKey = requireEnv(
+      "AGENT_API_KEY",
+      "AGENT_API_KEY is required for simple auth mode",
+    );
     return {
-      "X-Authorization": `Bearer ${process.env.AGENT_API_KEY}`,
-      "X-Agent-ID": process.env.AGENT_DID,
+      "X-Authorization": `Bearer ${apiKey}`,
+      "X-Agent-ID": agentDid,
     };
   }
 
@@ -91,7 +70,7 @@ export async function buildOutboundAuthHeaders({
     .sign(await getPrivateKey(alg));
 
   return {
-    "X-Agent-ID": process.env.AGENT_DID,
+    "X-Agent-ID": agentDid,
     "X-Timestamp": timestampMs,
     "X-Signature": signature,
     "X-Signature-Algorithm": alg,

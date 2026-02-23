@@ -1,48 +1,29 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
-import { AgentError } from "../utils/agentError.js";
 import { verifySignature } from "../utils/signature.js";
+import { AgentError } from "../utils/agentError.js";
+import { getAgentDid, getAuthMode, requireEnv } from "../config/runtime.js";
 
 let jwksResolver = null;
 
-function getAuthMode() {
-  const mode = (process.env.AGENT_AUTH_MODE ?? "simple").toLowerCase();
-  if (mode !== "simple" && mode !== "advanced") {
-    throw new AgentError(
-      "CONFIG_INVALID",
-      "AGENT_AUTH_MODE must be either simple or advanced",
-      false,
-      500,
-    );
-  }
-  return mode;
-}
-
 function getJwksResolver() {
   if (!jwksResolver) {
-    if (!process.env.PLATFORM_JWKS_URL) {
-      throw new AgentError(
-        "CONFIG_INVALID",
-        "PLATFORM_JWKS_URL is required for advanced auth mode",
-        false,
-        500,
-      );
-    }
-    jwksResolver = createRemoteJWKSet(new URL(process.env.PLATFORM_JWKS_URL));
+    const jwksUrl = requireEnv(
+      "PLATFORM_JWKS_URL",
+      "PLATFORM_JWKS_URL is required for advanced auth mode",
+    );
+    jwksResolver = createRemoteJWKSet(new URL(jwksUrl));
   }
   return jwksResolver;
 }
 
 export async function verifyInboundAuth({ headers, rawBody, taskId, correlationId }) {
+  // Inbound verification supports both platform auth families.
   const mode = getAuthMode();
   if (mode === "simple") {
-    if (!process.env.AGENT_SECRET) {
-      throw new AgentError(
-        "CONFIG_INVALID",
-        "AGENT_SECRET is required for simple auth mode",
-        false,
-        500,
-      );
-    }
+    const agentSecret = requireEnv(
+      "AGENT_SECRET",
+      "AGENT_SECRET is required for simple auth mode",
+    );
 
     const signature = headers["x-platform-signature"];
     const timestamp = headers["x-platform-timestamp"];
@@ -50,7 +31,7 @@ export async function verifyInboundAuth({ headers, rawBody, taskId, correlationI
       throw new AgentError("AUTH_INVALID", "Missing simple auth headers", false, 401);
     }
 
-    if (!verifySignature(rawBody, signature, timestamp, process.env.AGENT_SECRET)) {
+    if (!verifySignature(rawBody, signature, timestamp, agentSecret)) {
       throw new AgentError("AUTH_INVALID", "Invalid platform signature", false, 401);
     }
     return;
@@ -62,14 +43,12 @@ export async function verifyInboundAuth({ headers, rawBody, taskId, correlationI
   }
   const token = auth.slice("Bearer ".length).trim();
 
-  if (!process.env.AGENT_DID) {
-    throw new AgentError("CONFIG_INVALID", "AGENT_DID is required", false, 500);
-  }
+  const agentDid = getAgentDid();
 
   let payload;
   try {
     const verified = await jwtVerify(token, getJwksResolver(), {
-      audience: process.env.AGENT_DID,
+      audience: agentDid,
       ...(process.env.PLATFORM_JWT_ISSUER
         ? { issuer: process.env.PLATFORM_JWT_ISSUER }
         : {}),

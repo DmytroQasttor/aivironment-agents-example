@@ -1,56 +1,43 @@
 import { runAgent } from "../agentRunner.js";
 import { verifyInboundAuth } from "../auth/inboundAuth.js";
 import { AgentError } from "../utils/agentError.js";
+import { buildA2AFailure, buildA2ASuccess } from "../utils/a2aResponse.js";
 import { logError, logInfo } from "../utils/log.js";
 import { validateA2AForwardEnvelope } from "../validation/schemas.js";
 
 export async function a2aHandler(req, res) {
+  // Raw body is required because signature verification must use exact bytes.
   const bodyRaw = Buffer.isBuffer(req.body) ? req.body : Buffer.from([]);
   if (bodyRaw.length === 0) {
-    return res.status(400).json({
-      type: "a2a_response",
-      task_id: "unknown",
-      status: "failed",
-      error: {
-        code: "PAYLOAD_INVALID",
-        message: "Expected raw JSON body",
-        retryable: false,
-      },
-    });
+    return res
+      .status(400)
+      .json(buildA2AFailure("unknown", "PAYLOAD_INVALID", "Expected raw JSON body", false));
   }
 
   let parsedBody;
   try {
     parsedBody = JSON.parse(bodyRaw.toString("utf-8"));
   } catch {
-    return res.status(400).json({
-      type: "a2a_response",
-      task_id: "unknown",
-      status: "failed",
-      error: {
-        code: "PAYLOAD_INVALID",
-        message: "Invalid JSON body",
-        retryable: false,
-      },
-    });
+    return res
+      .status(400)
+      .json(buildA2AFailure("unknown", "PAYLOAD_INVALID", "Invalid JSON body", false));
   }
 
   const envelopeValidation = validateA2AForwardEnvelope(parsedBody);
   if (!envelopeValidation.ok) {
-    return res.status(400).json({
-      type: "a2a_response",
-      task_id: "unknown",
-      status: "failed",
-      error: {
-        code: "PAYLOAD_INVALID",
-        message: `Envelope failed validation: ${envelopeValidation.errors.join("; ")}`,
-        retryable: false,
-      },
-    });
+    return res.status(400).json(
+      buildA2AFailure(
+        "unknown",
+        "PAYLOAD_INVALID",
+        `Envelope failed validation: ${envelopeValidation.errors.join("; ")}`,
+        false,
+      ),
+    );
   }
   const task = envelopeValidation.value;
 
   try {
+    // Verify platform identity before any business logic.
     await verifyInboundAuth({
       headers: req.headers,
       rawBody: bodyRaw,
@@ -66,12 +53,7 @@ export async function a2aHandler(req, res) {
     });
 
     const result = await runAgent(task);
-    return res.json({
-      type: "a2a_response",
-      task_id: task.task_id,
-      status: "completed",
-      result,
-    });
+    return res.json(buildA2ASuccess(task.task_id, result));
   } catch (err) {
     const agentError =
       err instanceof AgentError
@@ -90,15 +72,15 @@ export async function a2aHandler(req, res) {
       message: agentError.message,
     });
 
-    return res.status(agentError.statusCode).json({
-      type: "a2a_response",
-      task_id: task.task_id,
-      status: "failed",
-      error: {
-        code: agentError.code,
-        message: agentError.message,
-        retryable: agentError.retryable,
-      },
-    });
+    return res
+      .status(agentError.statusCode)
+      .json(
+        buildA2AFailure(
+          task.task_id,
+          agentError.code,
+          agentError.message,
+          agentError.retryable,
+        ),
+      );
   }
 }

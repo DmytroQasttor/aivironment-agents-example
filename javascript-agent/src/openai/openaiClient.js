@@ -1,40 +1,22 @@
 import OpenAI from "openai";
-import { AgentError } from "../utils/agentError.js";
+import { requireEnv } from "../config/runtime.js";
 
 let openaiClient = null;
 
 export function getOpenAIModel() {
-  if (!process.env.OPENAI_API_KEY) {
-    throw new AgentError(
-      "CONFIG_INVALID",
-      "OPENAI_API_KEY is required for LLM-driven decisions",
-      false,
-      500,
-    );
-  }
-  if (!process.env.OPENAI_MODEL) {
-    throw new AgentError(
-      "CONFIG_INVALID",
-      "OPENAI_MODEL is required for LLM-driven decisions",
-      false,
-      500,
-    );
-  }
-  return process.env.OPENAI_MODEL;
+  // Validates key + model together so failures are explicit and early.
+  requireEnv("OPENAI_API_KEY", "OPENAI_API_KEY is required for LLM-driven decisions");
+  return requireEnv("OPENAI_MODEL", "OPENAI_MODEL is required for LLM-driven decisions");
 }
 
 export function getOpenAIClient() {
   if (!openaiClient) {
-    if (!process.env.OPENAI_API_KEY) {
-      throw new AgentError(
-        "CONFIG_INVALID",
-        "OPENAI_API_KEY is required for LLM-driven decisions",
-        false,
-        500,
-      );
-    }
+    const apiKey = requireEnv(
+      "OPENAI_API_KEY",
+      "OPENAI_API_KEY is required for LLM-driven decisions",
+    );
     openaiClient = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
+      apiKey,
     });
   }
   return openaiClient;
