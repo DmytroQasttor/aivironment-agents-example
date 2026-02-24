@@ -1,3 +1,4 @@
+import hashlib
 import os
 import jwt
 from jwt import PyJWKClient
@@ -67,9 +68,44 @@ def _verify_advanced(headers: dict, task_id: str, correlation_id: str) -> None:
 def verify_inbound_auth(
     headers: dict, raw_body: bytes, task_id: str, correlation_id: str
 ) -> None:
-    # A single entrypoint keeps the auth contract clear and easy to document.
-    mode = get_auth_mode()
-    if mode == "simple":
+    # Platform->agent now uses bearer JWT for all agents (independent of agent auth_mode).
+    auth = headers.get("authorization")
+    body_hash = hashlib.sha256(raw_body).hexdigest()
+    if isinstance(auth, str) and auth.startswith("Bearer "):
+        token = auth.replace("Bearer ", "", 1).strip()
+        audience = require_env(
+            "AGENT_DID", "AGENT_DID is required for inbound platform auth verification"
+        )
+        jwk_client = _get_jwks_client()
+        issuer = os.getenv("PLATFORM_JWT_ISSUER", "federated-agent-platform")
+
+        try:
+            signing_key = jwk_client.get_signing_key_from_jwt(token)
+            payload = jwt.decode(
+                token,
+                signing_key.key,
+                algorithms=["RS256", "ES256", "HS256"],
+                audience=audience,
+                issuer=issuer,
+                options={"verify_signature": True, "verify_aud": True},
+            )
+        except Exception:
+            raise AgentError("AUTH_INVALID", "Invalid platform bearer token", False, 401)
+
+        if isinstance(payload.get("task_id"), str) and payload["task_id"] != task_id:
+            raise AgentError("AUTH_INVALID", "JWT task binding mismatch", False, 401)
+        if isinstance(payload.get("method"), str) and payload["method"].upper() != "POST":
+            raise AgentError("AUTH_INVALID", "JWT method mismatch", False, 401)
+        if isinstance(payload.get("path"), str) and payload["path"] != "/a2a":
+            raise AgentError("AUTH_INVALID", "JWT path mismatch", False, 401)
+        if isinstance(payload.get("body_hash"), str) and payload["body_hash"] not in {
+            body_hash,
+            f"sha256:{body_hash}",
+        }:
+            raise AgentError("AUTH_INVALID", "JWT body_hash mismatch", False, 401)
+        return
+
+    if os.getenv("ALLOW_LEGACY_PLATFORM_HMAC") == "true":
         _verify_simple(headers, raw_body)
         return
-    _verify_advanced(headers, task_id, correlation_id)
+    raise AgentError("AUTH_INVALID", "Missing platform bearer token", False, 401)

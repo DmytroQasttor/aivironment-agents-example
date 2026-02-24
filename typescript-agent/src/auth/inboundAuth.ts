@@ -1,4 +1,5 @@
 import type { IncomingHttpHeaders } from "node:http";
+import crypto from "node:crypto";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { verifySignature } from "../utils/signature";
 import { AgentError } from "../utils/agentError";
@@ -49,80 +50,88 @@ export async function verifyInboundAuth(params: {
   taskId: string;
   correlationId: string;
 }) {
-  const mode = getAuthMode();
+  const token = params.headers.authorization?.startsWith("Bearer ")
+    ? getBearerToken(params.headers)
+    : null;
+  const audience = process.env.AGENT_DID;
+  if (!audience) {
+    throw new AgentError(
+      "CONFIG_INVALID",
+      "AGENT_DID is required for inbound platform auth verification",
+      false,
+      500,
+    );
+  }
+  const method = "POST";
+  const path = "/a2a";
+  const bodyHash = crypto
+    .createHash("sha256")
+    .update(params.rawBody)
+    .digest("hex");
 
-  if (mode === "simple") {
-    const sig = params.headers["x-platform-signature"];
-    const ts = params.headers["x-platform-timestamp"];
+  if (token) {
+    let payload: Awaited<ReturnType<typeof jwtVerify>>["payload"];
+    try {
+      const verified = await jwtVerify(token, getJwksResolver(), {
+        audience,
+        issuer: process.env.PLATFORM_JWT_ISSUER ?? "federated-agent-platform",
+      });
+      payload = verified.payload;
+    } catch {
+      throw new AgentError("AUTH_INVALID", "Invalid platform bearer token", false, 401);
+    }
 
-    if (typeof sig !== "string" || typeof ts !== "string") {
+    const taskIdClaim = payload.task_id;
+    if (typeof taskIdClaim === "string" && taskIdClaim !== params.taskId) {
       throw new AgentError(
         "AUTH_INVALID",
-        "Missing simple auth headers",
+        "Token task_id claim does not match request task_id",
         false,
         401,
       );
     }
 
-    if (!process.env.AGENT_SECRET) {
-      throw new AgentError(
-        "CONFIG_INVALID",
-        "AGENT_SECRET is required for simple auth mode",
-        false,
-        500,
-      );
+    const methodClaim = payload.method;
+    if (typeof methodClaim === "string" && methodClaim.toUpperCase() !== method) {
+      throw new AgentError("AUTH_INVALID", "Token method claim mismatch", false, 401);
     }
 
-    const ok = verifySignature(params.rawBody, sig, ts, process.env.AGENT_SECRET);
-    if (!ok) {
-      throw new AgentError("AUTH_INVALID", "Invalid signature", false, 401);
+    const pathClaim = payload.path;
+    if (typeof pathClaim === "string" && pathClaim !== path) {
+      throw new AgentError("AUTH_INVALID", "Token path claim mismatch", false, 401);
+    }
+
+    const bodyHashClaim = payload.body_hash;
+    if (
+      typeof bodyHashClaim === "string" &&
+      bodyHashClaim !== bodyHash &&
+      bodyHashClaim !== `sha256:${bodyHash}`
+    ) {
+      throw new AgentError("AUTH_INVALID", "Token body_hash claim mismatch", false, 401);
     }
     return;
   }
 
-  const token = getBearerToken(params.headers);
-  const audience = process.env.AGENT_DID;
-  if (!audience) {
-    throw new AgentError(
-      "CONFIG_INVALID",
-      "AGENT_DID is required for advanced auth mode",
-      false,
-      500,
-    );
-  }
-
-  const issuer = process.env.PLATFORM_JWT_ISSUER;
-  let payload: Awaited<ReturnType<typeof jwtVerify>>["payload"];
-  try {
-    const verified = await jwtVerify(token, getJwksResolver(), {
-      audience,
-      ...(issuer ? { issuer } : {}),
-    });
-    payload = verified.payload;
-  } catch {
-    throw new AgentError("AUTH_INVALID", "Invalid platform bearer token", false, 401);
-  }
-
-  const taskIdClaim = payload.task_id;
-  if (typeof taskIdClaim === "string" && taskIdClaim !== params.taskId) {
+  // Temporary migration fallback for old platform simple-mode forwarding.
+  if (process.env.ALLOW_LEGACY_PLATFORM_HMAC !== "true") {
     throw new AgentError(
       "AUTH_INVALID",
-      "Token task_id claim does not match request task_id",
+      "Missing platform bearer token",
       false,
       401,
     );
   }
 
-  const correlationClaim = payload.correlation_id;
-  if (
-    typeof correlationClaim === "string" &&
-    correlationClaim !== params.correlationId
-  ) {
-    throw new AgentError(
-      "AUTH_INVALID",
-      "Token correlation_id claim does not match request context",
-      false,
-      401,
-    );
+  const sig = params.headers["x-platform-signature"];
+  const ts = params.headers["x-platform-timestamp"];
+  if (typeof sig !== "string" || typeof ts !== "string") {
+    throw new AgentError("AUTH_INVALID", "Missing legacy simple auth headers", false, 401);
+  }
+  if (!process.env.AGENT_SECRET) {
+    throw new AgentError("CONFIG_INVALID", "AGENT_SECRET is required for legacy fallback", false, 500);
+  }
+  const ok = verifySignature(params.rawBody, sig, ts, process.env.AGENT_SECRET);
+  if (!ok) {
+    throw new AgentError("AUTH_INVALID", "Invalid legacy signature", false, 401);
   }
 }

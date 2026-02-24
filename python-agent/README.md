@@ -6,7 +6,7 @@ Intent implemented:
 - `ops.audit`
 
 Behavior:
-- Verifies inbound platform auth (`simple` HMAC or `advanced` JWT/JWKS).
+- Verifies inbound platform JWT auth via JWKS.
 - Validates strict `a2a_forward` envelope and `ops.audit` input schema.
 - Uses OpenAI Python SDK tool-calling loop (`responses.create`) for runtime decisions.
 - Uses MCP tools for context/route discovery:
@@ -49,6 +49,9 @@ Advanced mode:
 - `PLATFORM_JWKS_URL`
 - `AGENT_PRIVATE_KEY_PEM`
 - optional `PLATFORM_JWT_ISSUER`, `AGENT_SIGNATURE_ALGORITHM`, `AGENT_KEY_ID`
+
+Optional migration flag:
+- `ALLOW_LEGACY_PLATFORM_HMAC=true`
 
 ## Render deploy
 

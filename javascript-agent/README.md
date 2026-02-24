@@ -6,7 +6,7 @@ Intent implemented:
 - `ops.orchestrate`
 
 Behavior:
-- Validates inbound `a2a_forward` request and auth (simple/advanced).
+- Validates inbound `a2a_forward` request and platform JWT auth.
 - Uses OpenAI Node SDK tool-calling loop (`responses.create`) for agent decisions.
 - Model decides whether to complete locally or delegate, and chooses target intent/payload via MCP tools.
 - Calls MCP tools when needed:
@@ -41,3 +41,6 @@ Advanced mode:
 - `PLATFORM_JWKS_URL`
 - `AGENT_PRIVATE_KEY_PEM`
 - optional `PLATFORM_JWT_ISSUER`, `AGENT_SIGNATURE_ALGORITHM`, `AGENT_KEY_ID`
+
+Optional migration flag:
+- `ALLOW_LEGACY_PLATFORM_HMAC=true`
