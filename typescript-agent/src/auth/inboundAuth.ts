@@ -1,25 +1,9 @@
 import type { IncomingHttpHeaders } from "node:http";
 import crypto from "node:crypto";
 import { createRemoteJWKSet, jwtVerify } from "jose";
-import { verifySignature } from "../utils/signature";
 import { AgentError } from "../utils/agentError";
 
-type AuthMode = "simple" | "advanced";
-
 let jwksResolver: ReturnType<typeof createRemoteJWKSet> | null = null;
-
-function getAuthMode(): AuthMode {
-  const mode = (process.env.AGENT_AUTH_MODE ?? "simple").toLowerCase();
-  if (mode !== "simple" && mode !== "advanced") {
-    throw new AgentError(
-      "CONFIG_INVALID",
-      "AGENT_AUTH_MODE must be either simple or advanced",
-      false,
-      500,
-    );
-  }
-  return mode;
-}
 
 function getBearerToken(headers: IncomingHttpHeaders): string {
   const authorization = headers.authorization;
@@ -34,7 +18,7 @@ function getJwksResolver() {
     if (!process.env.PLATFORM_JWKS_URL) {
       throw new AgentError(
         "CONFIG_INVALID",
-        "PLATFORM_JWKS_URL is required for advanced auth mode",
+        "PLATFORM_JWKS_URL is required for inbound platform JWT verification",
         false,
         500,
       );
@@ -112,26 +96,10 @@ export async function verifyInboundAuth(params: {
     return;
   }
 
-  // Temporary migration fallback for old platform simple-mode forwarding.
-  if (process.env.ALLOW_LEGACY_PLATFORM_HMAC !== "true") {
-    throw new AgentError(
-      "AUTH_INVALID",
-      "Missing platform bearer token",
-      false,
-      401,
-    );
-  }
-
-  const sig = params.headers["x-platform-signature"];
-  const ts = params.headers["x-platform-timestamp"];
-  if (typeof sig !== "string" || typeof ts !== "string") {
-    throw new AgentError("AUTH_INVALID", "Missing legacy simple auth headers", false, 401);
-  }
-  if (!process.env.AGENT_SECRET) {
-    throw new AgentError("CONFIG_INVALID", "AGENT_SECRET is required for legacy fallback", false, 500);
-  }
-  const ok = verifySignature(params.rawBody, sig, ts, process.env.AGENT_SECRET);
-  if (!ok) {
-    throw new AgentError("AUTH_INVALID", "Invalid legacy signature", false, 401);
-  }
+  throw new AgentError(
+    "AUTH_INVALID",
+    "Missing platform bearer token",
+    false,
+    401,
+  );
 }

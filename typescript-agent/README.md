@@ -21,7 +21,6 @@ Use this agent to manually validate full platform workflow in UI:
 - Intent routing map (`ops.coordinate` implemented)
 - Inbound platform auth:
   - `Authorization: Bearer <platform_jwt>` verified via JWKS (for all agents)
-  - optional legacy fallback: HMAC headers only when `ALLOW_LEGACY_PLATFORM_HMAC=true`
 - Outbound auth for MCP calls (same auth family as platform)
 - OpenAI Node SDK tool-calling loop (`responses.create`) for runtime decisions
 - MCP tools exposed to model:
@@ -84,8 +83,6 @@ For `advanced` mode:
 - `AGENT_SIGNATURE_ALGORITHM` (default `RS256`)
 - `AGENT_KEY_ID` (optional)
 
-Optional migration flag:
-- `ALLOW_LEGACY_PLATFORM_HMAC=true`
 
 4. Run agent:
 

@@ -50,9 +50,6 @@ Advanced mode:
 - `AGENT_PRIVATE_KEY_PEM`
 - optional `PLATFORM_JWT_ISSUER`, `AGENT_SIGNATURE_ALGORITHM`, `AGENT_KEY_ID`
 
-Optional migration flag:
-- `ALLOW_LEGACY_PLATFORM_HMAC=true`
-
 ## Render deploy
 
 - Root directory: `python-agent`
