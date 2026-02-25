@@ -94,6 +94,10 @@ function parseJsonArgs(rawArgs: unknown) {
   }
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 async function runToolCall(call: any, requestTaskId: string) {
   const args = parseJsonArgs(call.arguments);
   switch (call.name) {
@@ -148,6 +152,20 @@ async function runToolCall(call: any, requestTaskId: string) {
           true,
           502,
         );
+      }
+      if (!isPlainObject(args.payload)) {
+        const routeDetails = await mcpCallTool("get_route_details", {
+          task_id: requestTaskId,
+          slug: connection,
+        });
+        return {
+          error: {
+            code: "TOOL_ARGUMENTS_INVALID",
+            message:
+              "delegate_task requires payload as a JSON object matching selected route intent schema",
+          },
+          route_details: routeDetails,
+        };
       }
       return mcpCallTool(
         "delegate_task",
@@ -214,7 +232,19 @@ async function decideWithLlm(params: {
 
     const toolOutputs = [];
     for (const call of toolCalls) {
-      const result = await runToolCall(call, params.request.task_id);
+      let result: unknown;
+      try {
+        result = await runToolCall(call, params.request.task_id);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Unknown tool execution error";
+        result = {
+          error: {
+            code: "TOOL_EXECUTION_FAILED",
+            message,
+          },
+        };
+      }
       toolOutputs.push({
         type: "function_call_output",
         call_id: call.call_id,

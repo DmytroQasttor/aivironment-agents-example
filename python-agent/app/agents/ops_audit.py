@@ -52,6 +52,10 @@ def _parse_json(text: str, error_message: str) -> dict[str, Any]:
         raise AgentError("EXECUTION_FAILED", error_message, True, 502)
 
 
+def _is_plain_object(value: Any) -> bool:
+    return isinstance(value, dict)
+
+
 def _ensure_valid_output(result: dict[str, Any]) -> dict[str, Any]:
     ok_out, errors_out = validate_ops_audit_output(result)
     if not ok_out:
@@ -184,6 +188,20 @@ def _run_tool_call(call: Any, request_task_id: str) -> Any:
             True,
             502,
         )
+    if not _is_plain_object(args.get("payload")):
+        route_details = mcp_call_tool(
+            "get_route_details", {"task_id": request_task_id, "slug": connection}
+        )
+        return {
+            "error": {
+                "code": "TOOL_ARGUMENTS_INVALID",
+                "message": (
+                    "delegate_task requires payload as a JSON object matching selected "
+                    "route intent schema"
+                ),
+            },
+            "route_details": route_details,
+        }
 
     delegate_args: dict[str, Any] = {
         "task_id": request_task_id,
@@ -240,7 +258,15 @@ def _decide_with_llm(task: dict[str, Any], payload: dict[str, Any]) -> dict[str,
 
         tool_outputs: list[dict[str, Any]] = []
         for call in tool_calls:
-            result = _run_tool_call(call, task["task_id"])
+            try:
+                result = _run_tool_call(call, task["task_id"])
+            except Exception as err:
+                result = {
+                    "error": {
+                        "code": "TOOL_EXECUTION_FAILED",
+                        "message": str(err),
+                    }
+                }
             tool_outputs.append(
                 {
                     "type": "function_call_output",
