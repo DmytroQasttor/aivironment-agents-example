@@ -1,0 +1,38 @@
+/docs
+
+# Node.js / TypeScript
+**/node_modules/
+**/dist/
+**/.turbo/
+**/.next/
+**/.cache/
+**/*.tsbuildinfo
+
+# Python
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.venv/
+**/venv/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
