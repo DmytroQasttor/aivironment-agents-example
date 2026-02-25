@@ -106,6 +106,41 @@ function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value,
+  );
+}
+
+function extractConnectionId(routeDetails) {
+  if (!isPlainObject(routeDetails)) {
+    return null;
+  }
+  const topCandidates = [
+    routeDetails.connection,
+    routeDetails.connection_id,
+    routeDetails.id,
+  ];
+  for (const candidate of topCandidates) {
+    if (typeof candidate === "string" && isUuid(candidate)) {
+      return candidate;
+    }
+  }
+  if (isPlainObject(routeDetails.route)) {
+    const nested = [
+      routeDetails.route.connection,
+      routeDetails.route.connection_id,
+      routeDetails.route.id,
+    ];
+    for (const candidate of nested) {
+      if (typeof candidate === "string" && isUuid(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return null;
+}
+
 async function runToolCall(call, requestTaskId) {
   const args = parseJsonArgs(call.arguments);
   switch (call.name) {
@@ -161,11 +196,22 @@ async function runToolCall(call, requestTaskId) {
           502,
         );
       }
-      if (!isPlainObject(args.payload)) {
-        const routeDetails = await mcpCallTool("get_route_details", {
+      let routeDetails = null;
+      let resolvedConnection = connection;
+      if (!isUuid(connection)) {
+        routeDetails = await mcpCallTool("get_route_details", {
           task_id: requestTaskId,
           slug: connection,
         });
+        resolvedConnection = extractConnectionId(routeDetails) ?? connection;
+      }
+      if (!isPlainObject(args.payload)) {
+        if (!routeDetails && !isUuid(connection)) {
+          routeDetails = await mcpCallTool("get_route_details", {
+            task_id: requestTaskId,
+            slug: connection,
+          });
+        }
         return {
           error: {
             code: "TOOL_ARGUMENTS_INVALID",
@@ -179,7 +225,7 @@ async function runToolCall(call, requestTaskId) {
         "delegate_task",
         {
           task_id: requestTaskId,
-          connection,
+          connection: resolvedConnection,
           target_agent: targetAgentDid,
           intent: args.intent,
           payload: args.payload,

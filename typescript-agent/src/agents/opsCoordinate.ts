@@ -98,6 +98,41 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value,
+  );
+}
+
+function extractConnectionId(routeDetails: unknown): string | null {
+  if (!isPlainObject(routeDetails)) {
+    return null;
+  }
+  const topCandidates = [
+    routeDetails.connection,
+    routeDetails.connection_id,
+    routeDetails.id,
+  ];
+  for (const candidate of topCandidates) {
+    if (typeof candidate === "string" && isUuid(candidate)) {
+      return candidate;
+    }
+  }
+  if (isPlainObject(routeDetails.route)) {
+    const nested = [
+      routeDetails.route.connection,
+      routeDetails.route.connection_id,
+      routeDetails.route.id,
+    ];
+    for (const candidate of nested) {
+      if (typeof candidate === "string" && isUuid(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return null;
+}
+
 async function runToolCall(call: any, requestTaskId: string) {
   const args = parseJsonArgs(call.arguments);
   switch (call.name) {
@@ -153,11 +188,22 @@ async function runToolCall(call: any, requestTaskId: string) {
           502,
         );
       }
-      if (!isPlainObject(args.payload)) {
-        const routeDetails = await mcpCallTool("get_route_details", {
+      let routeDetails: unknown = null;
+      let resolvedConnection = connection;
+      if (!isUuid(connection)) {
+        routeDetails = await mcpCallTool("get_route_details", {
           task_id: requestTaskId,
           slug: connection,
         });
+        resolvedConnection = extractConnectionId(routeDetails) ?? connection;
+      }
+      if (!isPlainObject(args.payload)) {
+        if (!routeDetails && !isUuid(connection)) {
+          routeDetails = await mcpCallTool("get_route_details", {
+            task_id: requestTaskId,
+            slug: connection,
+          });
+        }
         return {
           error: {
             code: "TOOL_ARGUMENTS_INVALID",
@@ -171,7 +217,7 @@ async function runToolCall(call: any, requestTaskId: string) {
         "delegate_task",
         {
           task_id: requestTaskId,
-          connection,
+          connection: resolvedConnection,
           target_agent: targetAgentDid,
           intent: args.intent,
           payload: args.payload,

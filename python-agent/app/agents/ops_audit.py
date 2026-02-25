@@ -56,6 +56,36 @@ def _is_plain_object(value: Any) -> bool:
     return isinstance(value, dict)
 
 
+def _is_uuid(value: str) -> bool:
+    import re
+
+    return (
+        isinstance(value, str)
+        and re.match(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            value,
+            re.IGNORECASE,
+        )
+        is not None
+    )
+
+
+def _extract_connection_id(route_details: Any) -> str | None:
+    if not isinstance(route_details, dict):
+        return None
+    for key in ("connection", "connection_id", "id"):
+        candidate = route_details.get(key)
+        if isinstance(candidate, str) and _is_uuid(candidate):
+            return candidate
+    nested = route_details.get("route")
+    if isinstance(nested, dict):
+        for key in ("connection", "connection_id", "id"):
+            candidate = nested.get(key)
+            if isinstance(candidate, str) and _is_uuid(candidate):
+                return candidate
+    return None
+
+
 def _ensure_valid_output(result: dict[str, Any]) -> dict[str, Any]:
     ok_out, errors_out = validate_ops_audit_output(result)
     if not ok_out:
@@ -188,10 +218,20 @@ def _run_tool_call(call: Any, request_task_id: str) -> Any:
             True,
             502,
         )
-    if not _is_plain_object(args.get("payload")):
+    route_details: Any = None
+    resolved_connection = connection
+    if not _is_uuid(connection):
         route_details = mcp_call_tool(
             "get_route_details", {"task_id": request_task_id, "slug": connection}
         )
+        extracted = _extract_connection_id(route_details)
+        if isinstance(extracted, str):
+            resolved_connection = extracted
+    if not _is_plain_object(args.get("payload")):
+        if route_details is None and not _is_uuid(connection):
+            route_details = mcp_call_tool(
+                "get_route_details", {"task_id": request_task_id, "slug": connection}
+            )
         return {
             "error": {
                 "code": "TOOL_ARGUMENTS_INVALID",
@@ -205,7 +245,7 @@ def _run_tool_call(call: Any, request_task_id: str) -> Any:
 
     delegate_args: dict[str, Any] = {
         "task_id": request_task_id,
-        "connection": connection,
+        "connection": resolved_connection,
         "target_agent": target_agent_did,
         "intent": args.get("intent"),
         "payload": args.get("payload"),
