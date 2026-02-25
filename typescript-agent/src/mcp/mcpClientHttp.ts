@@ -148,7 +148,7 @@ export async function mcpCallTool(
   targetAgentDid?: string,
 ) {
   await ensureInitialized();
-  const result = await postRpc("tools/call", { name, args }, targetAgentDid);
+  const result = await postRpc("tools/call", { name, arguments: args }, targetAgentDid);
   if (typeof result === "undefined") {
     throw new AgentError("MCP_TOOL_FAILED", "MCP response missing result", true, 502);
   }

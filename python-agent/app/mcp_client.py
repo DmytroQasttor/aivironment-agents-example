@@ -134,7 +134,9 @@ def mcp_call_tool(
     name: str, args: dict[str, Any], target_agent_did: str | None = None
 ) -> Any:
     _ensure_initialized()
-    result = _post_rpc("tools/call", {"name": name, "args": args}, target_agent_did)
+    result = _post_rpc(
+        "tools/call", {"name": name, "arguments": args}, target_agent_did
+    )
     if result is None:
         raise AgentError("MCP_TOOL_FAILED", "MCP response missing result", True, 502)
     return result
