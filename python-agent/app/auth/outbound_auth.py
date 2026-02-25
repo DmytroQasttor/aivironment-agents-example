@@ -63,6 +63,7 @@ def build_outbound_auth_headers(
     )
 
     payload = {
+        "data": canonical,
         "canonical": canonical,
         "iat": datetime.now(timezone.utc),
         "exp": datetime.now(timezone.utc) + timedelta(seconds=60),

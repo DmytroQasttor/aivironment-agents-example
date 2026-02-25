@@ -60,7 +60,7 @@ export async function buildOutboundAuthHeaders({
     body,
   });
   const nowSec = Math.floor(Date.now() / 1000);
-  const signature = await new SignJWT({ canonical })
+  const signature = await new SignJWT({ data: canonical, canonical })
     .setProtectedHeader({
       alg,
       ...(process.env.AGENT_KEY_ID ? { kid: process.env.AGENT_KEY_ID } : {}),

@@ -42,6 +42,102 @@ def _pick_rpc_response(responses: list[dict[str, Any]], request_id: int) -> dict
     return None
 
 
+def _resolve_tool_auth_spec(params: dict[str, Any]) -> dict[str, Any] | None:
+    name = params.get("name")
+    tool_args = params.get("arguments")
+    if not isinstance(name, str) or not isinstance(tool_args, dict):
+        return None
+
+    if name == "list_reachable_routes":
+        return {"method": "GET", "path": "/api/v1/runtime/routes", "body": ""}
+    if name == "get_route_details":
+        slug = tool_args.get("slug")
+        if not isinstance(slug, str) or not slug:
+            return None
+        return {
+            "method": "GET",
+            "path": f"/api/v1/runtime/routes/{slug}",
+            "body": "",
+        }
+    if name == "get_task_context":
+        task_id = tool_args.get("task_id")
+        if not isinstance(task_id, str) or not task_id:
+            return None
+        return {
+            "method": "GET",
+            "path": f"/api/v1/runtime/task-context/{task_id}",
+            "body": "",
+        }
+    if name == "delegate_task":
+        target_agent = tool_args.get("target_agent")
+        if not isinstance(target_agent, str) or not target_agent:
+            return None
+        canonical_body: dict[str, Any] = {
+            "target_agent": target_agent,
+            "intent": tool_args.get("intent"),
+            "payload": tool_args.get("payload"),
+            **(
+                {"context": tool_args.get("context")}
+                if tool_args.get("context") is not None
+                else {}
+            ),
+            "connection": tool_args.get("connection"),
+        }
+        return {
+            "method": "POST",
+            "path": "/api/v1/a2a/send",
+            "body": json.dumps(canonical_body),
+            "target_agent_did": target_agent,
+        }
+    return None
+
+
+def _with_tool_auth_arguments(params: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(params.get("arguments"), dict):
+        return params
+    spec = _resolve_tool_auth_spec(params)
+    if not spec:
+        return params
+
+    auth_headers = build_outbound_auth_headers(
+        method=spec["method"],
+        path=spec["path"],
+        body=spec["body"],
+        target_agent_did=spec.get("target_agent_did"),
+    )
+    return {
+        **params,
+        "arguments": {
+            **params["arguments"],
+            **(
+                {"authorization_header": auth_headers["Authorization"]}
+                if isinstance(auth_headers.get("Authorization"), str)
+                else {}
+            ),
+            **(
+                {"agent_id_header": auth_headers["X-Agent-ID"]}
+                if isinstance(auth_headers.get("X-Agent-ID"), str)
+                else {}
+            ),
+            **(
+                {"timestamp_header": auth_headers["X-Timestamp"]}
+                if isinstance(auth_headers.get("X-Timestamp"), str)
+                else {}
+            ),
+            **(
+                {"signature_header": auth_headers["X-Signature"]}
+                if isinstance(auth_headers.get("X-Signature"), str)
+                else {}
+            ),
+            **(
+                {"algorithm_header": auth_headers["X-Signature-Algorithm"]}
+                if isinstance(auth_headers.get("X-Signature-Algorithm"), str)
+                else {}
+            ),
+        },
+    }
+
+
 def _post_rpc(
     method: str, params: dict[str, Any], target_agent_did: str | None = None
 ) -> Any:
@@ -49,59 +145,16 @@ def _post_rpc(
 
     mcp_url = require_env("MCP_HTTP_URL", "MCP_HTTP_URL is required")
     request_id = next(_rpc_ids)
-    base_params: dict[str, Any] = params
-    if method == "tools/call" and isinstance(params.get("arguments"), dict):
-        base_params = {**params, "arguments": {**params["arguments"]}}
-
+    resolved_params: dict[str, Any] = (
+        _with_tool_auth_arguments(params) if method == "tools/call" else params
+    )
     body = json.dumps(
-        {"jsonrpc": "2.0", "method": method, "params": base_params, "id": request_id}
+        {"jsonrpc": "2.0", "method": method, "params": resolved_params, "id": request_id}
     )
     path = urlparse(mcp_url).path or "/"
     auth_headers = build_outbound_auth_headers(
         method="POST", path=path, body=body, target_agent_did=target_agent_did
     )
-
-    resolved_params = base_params
-    if method == "tools/call" and isinstance(base_params.get("arguments"), dict):
-        resolved_params = {
-            **base_params,
-            "arguments": {
-                **base_params["arguments"],
-                **(
-                    {"authorization_header": auth_headers["Authorization"]}
-                    if isinstance(auth_headers.get("Authorization"), str)
-                    else {}
-                ),
-                **(
-                    {"agent_id_header": auth_headers["X-Agent-ID"]}
-                    if isinstance(auth_headers.get("X-Agent-ID"), str)
-                    else {}
-                ),
-                **(
-                    {"timestamp_header": auth_headers["X-Timestamp"]}
-                    if isinstance(auth_headers.get("X-Timestamp"), str)
-                    else {}
-                ),
-                **(
-                    {"signature_header": auth_headers["X-Signature"]}
-                    if isinstance(auth_headers.get("X-Signature"), str)
-                    else {}
-                ),
-                **(
-                    {"algorithm_header": auth_headers["X-Signature-Algorithm"]}
-                    if isinstance(auth_headers.get("X-Signature-Algorithm"), str)
-                    else {}
-                ),
-            },
-        }
-        body = json.dumps(
-            {
-                "jsonrpc": "2.0",
-                "method": method,
-                "params": resolved_params,
-                "id": request_id,
-            }
-        )
 
     headers: dict[str, str] = {
         "Accept": "application/json, text/event-stream",

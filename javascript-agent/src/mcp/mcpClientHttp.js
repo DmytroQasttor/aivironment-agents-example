@@ -46,75 +46,129 @@ function pickRpcResponse(responses, requestId) {
   return null;
 }
 
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function resolveToolAuthSpec(params) {
+  if (!isRecord(params)) {
+    return null;
+  }
+  const name = params.name;
+  const toolArgs = params.arguments;
+  if (typeof name !== "string" || !isRecord(toolArgs)) {
+    return null;
+  }
+
+  if (name === "list_reachable_routes") {
+    return { method: "GET", path: "/api/v1/runtime/routes", body: "" };
+  }
+  if (name === "get_route_details") {
+    if (typeof toolArgs.slug !== "string" || !toolArgs.slug) {
+      return null;
+    }
+    return {
+      method: "GET",
+      path: `/api/v1/runtime/routes/${encodeURIComponent(toolArgs.slug)}`,
+      body: "",
+    };
+  }
+  if (name === "get_task_context") {
+    if (typeof toolArgs.task_id !== "string" || !toolArgs.task_id) {
+      return null;
+    }
+    return {
+      method: "GET",
+      path: `/api/v1/runtime/task-context/${encodeURIComponent(toolArgs.task_id)}`,
+      body: "",
+    };
+  }
+  if (name === "delegate_task") {
+    if (typeof toolArgs.target_agent !== "string" || !toolArgs.target_agent) {
+      return null;
+    }
+    const canonicalBody = {
+      target_agent: toolArgs.target_agent,
+      intent: toolArgs.intent,
+      payload: toolArgs.payload,
+      ...(toolArgs.context !== null && typeof toolArgs.context !== "undefined"
+        ? { context: toolArgs.context }
+        : {}),
+      connection: toolArgs.connection,
+    };
+    return {
+      method: "POST",
+      path: "/api/v1/a2a/send",
+      body: JSON.stringify(canonicalBody),
+      targetAgentDid: toolArgs.target_agent,
+    };
+  }
+  return null;
+}
+
+async function withToolAuthArguments(params) {
+  if (!isRecord(params) || !isRecord(params.arguments)) {
+    return params;
+  }
+  const spec = resolveToolAuthSpec(params);
+  if (!spec) {
+    return params;
+  }
+
+  const authHeaders = await buildOutboundAuthHeaders({
+    method: spec.method,
+    path: spec.path,
+    body: spec.body,
+    targetAgentDid: spec.targetAgentDid,
+  });
+
+  return {
+    ...params,
+    arguments: {
+      ...params.arguments,
+      ...(typeof authHeaders.Authorization === "string"
+        ? { authorization_header: authHeaders.Authorization }
+        : {}),
+      ...(typeof authHeaders["X-Agent-ID"] === "string"
+        ? { agent_id_header: authHeaders["X-Agent-ID"] }
+        : {}),
+      ...(typeof authHeaders["X-Timestamp"] === "string"
+        ? { timestamp_header: authHeaders["X-Timestamp"] }
+        : {}),
+      ...(typeof authHeaders["X-Signature"] === "string"
+        ? { signature_header: authHeaders["X-Signature"] }
+        : {}),
+      ...(typeof authHeaders["X-Signature-Algorithm"] === "string"
+        ? { algorithm_header: authHeaders["X-Signature-Algorithm"] }
+        : {}),
+    },
+  };
+}
+
 async function postRpc(method, params, targetAgentDid) {
   const mcpUrl = getMcpUrl();
   const requestId = nextId++;
-  const baseParams =
-    method === "tools/call" &&
-    params &&
-    typeof params === "object" &&
-    Object.prototype.hasOwnProperty.call(params, "arguments")
-      ? {
-          ...params,
-          arguments: {
-            ...(params.arguments ?? {}),
-          },
-        }
-      : params;
-
-  let body = JSON.stringify({
-    jsonrpc: "2.0",
-    method,
-    params: baseParams,
-    id: requestId,
-  });
-
-  const authHeaders = await buildOutboundAuthHeaders({
-    method: "POST",
-    path: mcpUrl.pathname,
-    body,
-    targetAgentDid,
-  });
-
   const resolvedParams =
-    method === "tools/call" &&
-    baseParams &&
-    typeof baseParams === "object" &&
-    Object.prototype.hasOwnProperty.call(baseParams, "arguments")
-      ? {
-          ...baseParams,
-          arguments: {
-            ...(baseParams.arguments ?? {}),
-            ...(typeof authHeaders.Authorization === "string"
-              ? { authorization_header: authHeaders.Authorization }
-              : {}),
-            ...(typeof authHeaders["X-Agent-ID"] === "string"
-              ? { agent_id_header: authHeaders["X-Agent-ID"] }
-              : {}),
-            ...(typeof authHeaders["X-Timestamp"] === "string"
-              ? { timestamp_header: authHeaders["X-Timestamp"] }
-              : {}),
-            ...(typeof authHeaders["X-Signature"] === "string"
-              ? { signature_header: authHeaders["X-Signature"] }
-              : {}),
-            ...(typeof authHeaders["X-Signature-Algorithm"] === "string"
-              ? { algorithm_header: authHeaders["X-Signature-Algorithm"] }
-              : {}),
-          },
-        }
-      : baseParams;
+    method === "tools/call" ? await withToolAuthArguments(params) : params;
 
-  body = JSON.stringify({
+  const body = JSON.stringify({
     jsonrpc: "2.0",
     method,
     params: resolvedParams,
     id: requestId,
   });
 
+  const transportAuthHeaders = await buildOutboundAuthHeaders({
+    method: "POST",
+    path: mcpUrl.pathname,
+    body,
+    targetAgentDid,
+  });
+
   const headers = {
     Accept: "application/json, text/event-stream",
     "Content-Type": "application/json",
-    ...authHeaders,
+    ...transportAuthHeaders,
     ...(sessionId ? { "mcp-session-id": sessionId } : {}),
   };
 

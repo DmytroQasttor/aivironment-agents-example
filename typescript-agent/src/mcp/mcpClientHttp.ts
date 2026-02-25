@@ -16,6 +16,13 @@ interface JsonRpcResponse<T = unknown> {
   error?: JsonRpcError;
 }
 
+interface ToolAuthSpec {
+  method: string;
+  path: string;
+  body: string;
+  targetAgentDid?: string;
+}
+
 function getMcpUrl() {
   if (!process.env.MCP_HTTP_URL) {
     throw new AgentError("MCP_UNAVAILABLE", "MCP_HTTP_URL is not configured", true, 503);
@@ -59,72 +66,133 @@ function pickRpcResponse(responses: JsonRpcResponse[], requestId: number): JsonR
   return null;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function resolveToolAuthSpec(params: unknown): ToolAuthSpec | null {
+  if (!isRecord(params)) {
+    return null;
+  }
+  const name = params.name;
+  const toolArgs = params.arguments;
+  if (typeof name !== "string" || !isRecord(toolArgs)) {
+    return null;
+  }
+
+  if (name === "list_reachable_routes") {
+    return { method: "GET", path: "/api/v1/runtime/routes", body: "" };
+  }
+  if (name === "get_route_details") {
+    const slug = toolArgs.slug;
+    if (typeof slug !== "string" || !slug) {
+      return null;
+    }
+    return {
+      method: "GET",
+      path: `/api/v1/runtime/routes/${encodeURIComponent(slug)}`,
+      body: "",
+    };
+  }
+  if (name === "get_task_context") {
+    const taskId = toolArgs.task_id;
+    if (typeof taskId !== "string" || !taskId) {
+      return null;
+    }
+    return {
+      method: "GET",
+      path: `/api/v1/runtime/task-context/${encodeURIComponent(taskId)}`,
+      body: "",
+    };
+  }
+  if (name === "delegate_task") {
+    const targetAgent = toolArgs.target_agent;
+    if (typeof targetAgent !== "string" || !targetAgent) {
+      return null;
+    }
+    const canonicalBody: Record<string, unknown> = {
+      target_agent: targetAgent,
+      intent: toolArgs.intent,
+      payload: toolArgs.payload,
+      ...(toolArgs.context !== null && typeof toolArgs.context !== "undefined"
+        ? { context: toolArgs.context }
+        : {}),
+      connection: toolArgs.connection,
+    };
+    return {
+      method: "POST",
+      path: "/api/v1/a2a/send",
+      body: JSON.stringify(canonicalBody),
+      targetAgentDid: targetAgent,
+    };
+  }
+
+  return null;
+}
+
+async function withToolAuthArguments(params: unknown): Promise<unknown> {
+  if (!isRecord(params) || !isRecord(params.arguments)) {
+    return params;
+  }
+  const spec = resolveToolAuthSpec(params);
+  if (!spec) {
+    return params;
+  }
+
+  const authHeaders = await buildOutboundAuthHeaders({
+    method: spec.method,
+    path: spec.path,
+    body: spec.body,
+    targetAgentDid: spec.targetAgentDid,
+  });
+
+  return {
+    ...params,
+    arguments: {
+      ...params.arguments,
+      ...(typeof authHeaders.Authorization === "string"
+        ? { authorization_header: authHeaders.Authorization }
+        : {}),
+      ...(typeof authHeaders["X-Agent-ID"] === "string"
+        ? { agent_id_header: authHeaders["X-Agent-ID"] }
+        : {}),
+      ...(typeof authHeaders["X-Timestamp"] === "string"
+        ? { timestamp_header: authHeaders["X-Timestamp"] }
+        : {}),
+      ...(typeof authHeaders["X-Signature"] === "string"
+        ? { signature_header: authHeaders["X-Signature"] }
+        : {}),
+      ...(typeof authHeaders["X-Signature-Algorithm"] === "string"
+        ? { algorithm_header: authHeaders["X-Signature-Algorithm"] }
+        : {}),
+    },
+  };
+}
+
 async function postRpc(method: string, params: unknown, targetAgentDid?: string) {
   const mcpUrl = getMcpUrl();
   const requestId = nextId++;
-  const baseParams =
-    method === "tools/call" &&
-    typeof params === "object" &&
-    params !== null &&
-    "arguments" in (params as Record<string, unknown>)
-      ? {
-          ...(params as Record<string, unknown>),
-          arguments: {
-            ...(((params as Record<string, unknown>).arguments as Record<string, unknown>) ?? {}),
-          },
-        }
-      : params;
-  let body = JSON.stringify({
-    jsonrpc: "2.0",
-    method,
-    params: baseParams,
-    id: requestId,
-  });
-  const authHeaders = await buildOutboundAuthHeaders({
-    method: "POST",
-    path: mcpUrl.pathname,
-    body,
-    targetAgentDid,
-  });
 
   const resolvedParams =
-    method === "tools/call" &&
-    typeof baseParams === "object" &&
-    baseParams !== null &&
-    "arguments" in (baseParams as Record<string, unknown>)
-      ? {
-          ...(baseParams as Record<string, unknown>),
-          arguments: {
-            ...(((baseParams as Record<string, unknown>).arguments as Record<string, unknown>) ?? {}),
-            ...(typeof authHeaders.Authorization === "string"
-              ? { authorization_header: authHeaders.Authorization }
-              : {}),
-            ...(typeof authHeaders["X-Agent-ID"] === "string"
-              ? { agent_id_header: authHeaders["X-Agent-ID"] }
-              : {}),
-            ...(typeof authHeaders["X-Timestamp"] === "string"
-              ? { timestamp_header: authHeaders["X-Timestamp"] }
-              : {}),
-            ...(typeof authHeaders["X-Signature"] === "string"
-              ? { signature_header: authHeaders["X-Signature"] }
-              : {}),
-            ...(typeof authHeaders["X-Signature-Algorithm"] === "string"
-              ? { algorithm_header: authHeaders["X-Signature-Algorithm"] }
-              : {}),
-          },
-        }
-      : baseParams;
-  body = JSON.stringify({
+    method === "tools/call" ? await withToolAuthArguments(params) : params;
+  const body = JSON.stringify({
     jsonrpc: "2.0",
     method,
     params: resolvedParams,
     id: requestId,
   });
 
+  const transportAuthHeaders = await buildOutboundAuthHeaders({
+    method: "POST",
+    path: mcpUrl.pathname,
+    body,
+    targetAgentDid,
+  });
+
   const headers: Record<string, string> = {
     Accept: "application/json, text/event-stream",
     "Content-Type": "application/json",
-    ...authHeaders,
+    ...transportAuthHeaders,
   };
   if (sessionId) {
     headers["mcp-session-id"] = sessionId;

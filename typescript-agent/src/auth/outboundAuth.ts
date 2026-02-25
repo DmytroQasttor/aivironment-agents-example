@@ -96,7 +96,7 @@ export async function buildOutboundAuthHeaders(params: {
   });
 
   const nowSec = Math.floor(Date.now() / 1000);
-  const signature = await new SignJWT({ canonical })
+  const signature = await new SignJWT({ data: canonical, canonical })
     .setProtectedHeader({ alg, ...(kid ? { kid } : {}) })
     .setIssuedAt(nowSec)
     .setExpirationTime(nowSec + 60)
