@@ -66,7 +66,15 @@ export async function verifyInboundAuth(params: {
     }
 
     const taskIdClaim = payload.task_id;
-    if (typeof taskIdClaim === "string" && taskIdClaim !== params.taskId) {
+    if (typeof taskIdClaim !== "string" || !taskIdClaim) {
+      throw new AgentError(
+        "AUTH_INVALID",
+        "Token task_id claim is required",
+        false,
+        401,
+      );
+    }
+    if (taskIdClaim !== params.taskId) {
       throw new AgentError(
         "AUTH_INVALID",
         "Token task_id claim does not match request task_id",
@@ -92,6 +100,24 @@ export async function verifyInboundAuth(params: {
       bodyHashClaim !== `sha256:${bodyHash}`
     ) {
       throw new AgentError("AUTH_INVALID", "Token body_hash claim mismatch", false, 401);
+    }
+
+    const sourceAgentClaim = payload.source_agent;
+    const sourceAgentHeader = params.headers["x-source-agent-id"];
+    const sourceAgentHeaderValue = Array.isArray(sourceAgentHeader)
+      ? sourceAgentHeader[0]
+      : sourceAgentHeader;
+    if (
+      typeof sourceAgentClaim === "string" &&
+      typeof sourceAgentHeaderValue === "string" &&
+      sourceAgentClaim !== sourceAgentHeaderValue
+    ) {
+      throw new AgentError(
+        "AUTH_INVALID",
+        "Token source_agent claim mismatch",
+        false,
+        401,
+      );
     }
     return;
   }

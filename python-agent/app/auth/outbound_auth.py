@@ -44,7 +44,7 @@ def build_outbound_auth_headers(
             "AGENT_API_KEY", "AGENT_API_KEY is required for simple auth mode"
         )
         return {
-            "X-Authorization": f"Bearer {api_key}",
+            "Authorization": f"Bearer {api_key}",
             "X-Agent-ID": agent_did,
         }
 

@@ -78,7 +78,7 @@ export async function buildOutboundAuthHeaders(params: {
     }
 
     return {
-      "X-Authorization": `Bearer ${process.env.AGENT_API_KEY}`,
+      Authorization: `Bearer ${process.env.AGENT_API_KEY}`,
       "X-Agent-ID": agentDid,
     };
   }

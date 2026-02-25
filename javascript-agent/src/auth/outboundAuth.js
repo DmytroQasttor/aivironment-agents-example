@@ -45,7 +45,7 @@ export async function buildOutboundAuthHeaders({
       "AGENT_API_KEY is required for simple auth mode",
     );
     return {
-      "X-Authorization": `Bearer ${apiKey}`,
+      Authorization: `Bearer ${apiKey}`,
       "X-Agent-ID": agentDid,
     };
   }

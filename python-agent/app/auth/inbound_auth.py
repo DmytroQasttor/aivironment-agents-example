@@ -37,11 +37,12 @@ def verify_inbound_auth(
     body_hash = hashlib.sha256(raw_body).hexdigest()
 
     try:
+        allowed_alg = os.getenv("PLATFORM_JWT_ALGORITHM", "RS256")
         signing_key = jwk_client.get_signing_key_from_jwt(token)
         payload = jwt.decode(
             token,
             signing_key.key,
-            algorithms=["RS256", "ES256", "HS256"],
+            algorithms=[allowed_alg],
             audience=audience,
             issuer=issuer,
             options={"verify_signature": True, "verify_aud": True},
@@ -49,7 +50,10 @@ def verify_inbound_auth(
     except Exception:
         raise AgentError("AUTH_INVALID", "Invalid platform bearer token", False, 401)
 
-    if isinstance(payload.get("task_id"), str) and payload["task_id"] != task_id:
+    token_task_id = payload.get("task_id")
+    if not isinstance(token_task_id, str) or not token_task_id:
+        raise AgentError("AUTH_INVALID", "JWT task_id claim is required", False, 401)
+    if token_task_id != task_id:
         raise AgentError("AUTH_INVALID", "JWT task binding mismatch", False, 401)
     if isinstance(payload.get("method"), str) and payload["method"].upper() != "POST":
         raise AgentError("AUTH_INVALID", "JWT method mismatch", False, 401)
@@ -60,3 +64,12 @@ def verify_inbound_auth(
         f"sha256:{body_hash}",
     }:
         raise AgentError("AUTH_INVALID", "JWT body_hash mismatch", False, 401)
+
+    source_agent_claim = payload.get("source_agent")
+    source_agent_header = headers.get("x-source-agent-id")
+    if (
+        isinstance(source_agent_claim, str)
+        and isinstance(source_agent_header, str)
+        and source_agent_claim != source_agent_header
+    ):
+        raise AgentError("AUTH_INVALID", "JWT source_agent mismatch", False, 401)

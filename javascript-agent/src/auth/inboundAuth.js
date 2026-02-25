@@ -34,7 +34,10 @@ export async function verifyInboundAuth({ headers, rawBody, taskId, correlationI
       throw new AgentError("AUTH_INVALID", "Invalid platform bearer token", false, 401);
     }
 
-    if (typeof payload.task_id === "string" && payload.task_id !== taskId) {
+    if (typeof payload.task_id !== "string" || !payload.task_id) {
+      throw new AgentError("AUTH_INVALID", "JWT task_id claim is required", false, 401);
+    }
+    if (payload.task_id !== taskId) {
       throw new AgentError("AUTH_INVALID", "JWT task binding mismatch", false, 401);
     }
     if (typeof payload.method === "string" && payload.method.toUpperCase() !== "POST") {
@@ -49,6 +52,15 @@ export async function verifyInboundAuth({ headers, rawBody, taskId, correlationI
       payload.body_hash !== `sha256:${bodyHash}`
     ) {
       throw new AgentError("AUTH_INVALID", "JWT body hash mismatch", false, 401);
+    }
+
+    const sourceAgentHeader = headers["x-source-agent-id"];
+    if (
+      typeof payload.source_agent === "string" &&
+      typeof sourceAgentHeader === "string" &&
+      payload.source_agent !== sourceAgentHeader
+    ) {
+      throw new AgentError("AUTH_INVALID", "JWT source_agent mismatch", false, 401);
     }
     return;
   }
