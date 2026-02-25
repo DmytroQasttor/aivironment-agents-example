@@ -49,13 +49,59 @@ def _post_rpc(
 
     mcp_url = require_env("MCP_HTTP_URL", "MCP_HTTP_URL is required")
     request_id = next(_rpc_ids)
+    base_params: dict[str, Any] = params
+    if method == "tools/call" and isinstance(params.get("arguments"), dict):
+        base_params = {**params, "arguments": {**params["arguments"]}}
+
     body = json.dumps(
-        {"jsonrpc": "2.0", "method": method, "params": params, "id": request_id}
+        {"jsonrpc": "2.0", "method": method, "params": base_params, "id": request_id}
     )
     path = urlparse(mcp_url).path or "/"
     auth_headers = build_outbound_auth_headers(
         method="POST", path=path, body=body, target_agent_did=target_agent_did
     )
+
+    resolved_params = base_params
+    if method == "tools/call" and isinstance(base_params.get("arguments"), dict):
+        resolved_params = {
+            **base_params,
+            "arguments": {
+                **base_params["arguments"],
+                **(
+                    {"authorization_header": auth_headers["Authorization"]}
+                    if isinstance(auth_headers.get("Authorization"), str)
+                    else {}
+                ),
+                **(
+                    {"agent_id_header": auth_headers["X-Agent-ID"]}
+                    if isinstance(auth_headers.get("X-Agent-ID"), str)
+                    else {}
+                ),
+                **(
+                    {"timestamp_header": auth_headers["X-Timestamp"]}
+                    if isinstance(auth_headers.get("X-Timestamp"), str)
+                    else {}
+                ),
+                **(
+                    {"signature_header": auth_headers["X-Signature"]}
+                    if isinstance(auth_headers.get("X-Signature"), str)
+                    else {}
+                ),
+                **(
+                    {"algorithm_header": auth_headers["X-Signature-Algorithm"]}
+                    if isinstance(auth_headers.get("X-Signature-Algorithm"), str)
+                    else {}
+                ),
+            },
+        }
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": resolved_params,
+                "id": request_id,
+            }
+        )
 
     headers: dict[str, str] = {
         "Accept": "application/json, text/event-stream",

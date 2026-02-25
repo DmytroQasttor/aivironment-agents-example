@@ -49,10 +49,23 @@ function pickRpcResponse(responses, requestId) {
 async function postRpc(method, params, targetAgentDid) {
   const mcpUrl = getMcpUrl();
   const requestId = nextId++;
-  const body = JSON.stringify({
+  const baseParams =
+    method === "tools/call" &&
+    params &&
+    typeof params === "object" &&
+    Object.prototype.hasOwnProperty.call(params, "arguments")
+      ? {
+          ...params,
+          arguments: {
+            ...(params.arguments ?? {}),
+          },
+        }
+      : params;
+
+  let body = JSON.stringify({
     jsonrpc: "2.0",
     method,
-    params,
+    params: baseParams,
     id: requestId,
   });
 
@@ -61,6 +74,41 @@ async function postRpc(method, params, targetAgentDid) {
     path: mcpUrl.pathname,
     body,
     targetAgentDid,
+  });
+
+  const resolvedParams =
+    method === "tools/call" &&
+    baseParams &&
+    typeof baseParams === "object" &&
+    Object.prototype.hasOwnProperty.call(baseParams, "arguments")
+      ? {
+          ...baseParams,
+          arguments: {
+            ...(baseParams.arguments ?? {}),
+            ...(typeof authHeaders.Authorization === "string"
+              ? { authorization_header: authHeaders.Authorization }
+              : {}),
+            ...(typeof authHeaders["X-Agent-ID"] === "string"
+              ? { agent_id_header: authHeaders["X-Agent-ID"] }
+              : {}),
+            ...(typeof authHeaders["X-Timestamp"] === "string"
+              ? { timestamp_header: authHeaders["X-Timestamp"] }
+              : {}),
+            ...(typeof authHeaders["X-Signature"] === "string"
+              ? { signature_header: authHeaders["X-Signature"] }
+              : {}),
+            ...(typeof authHeaders["X-Signature-Algorithm"] === "string"
+              ? { algorithm_header: authHeaders["X-Signature-Algorithm"] }
+              : {}),
+          },
+        }
+      : baseParams;
+
+  body = JSON.stringify({
+    jsonrpc: "2.0",
+    method,
+    params: resolvedParams,
+    id: requestId,
   });
 
   const headers = {

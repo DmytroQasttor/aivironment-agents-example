@@ -62,10 +62,22 @@ function pickRpcResponse(responses: JsonRpcResponse[], requestId: number): JsonR
 async function postRpc(method: string, params: unknown, targetAgentDid?: string) {
   const mcpUrl = getMcpUrl();
   const requestId = nextId++;
-  const body = JSON.stringify({
+  const baseParams =
+    method === "tools/call" &&
+    typeof params === "object" &&
+    params !== null &&
+    "arguments" in (params as Record<string, unknown>)
+      ? {
+          ...(params as Record<string, unknown>),
+          arguments: {
+            ...(((params as Record<string, unknown>).arguments as Record<string, unknown>) ?? {}),
+          },
+        }
+      : params;
+  let body = JSON.stringify({
     jsonrpc: "2.0",
     method,
-    params,
+    params: baseParams,
     id: requestId,
   });
   const authHeaders = await buildOutboundAuthHeaders({
@@ -73,6 +85,40 @@ async function postRpc(method: string, params: unknown, targetAgentDid?: string)
     path: mcpUrl.pathname,
     body,
     targetAgentDid,
+  });
+
+  const resolvedParams =
+    method === "tools/call" &&
+    typeof baseParams === "object" &&
+    baseParams !== null &&
+    "arguments" in (baseParams as Record<string, unknown>)
+      ? {
+          ...(baseParams as Record<string, unknown>),
+          arguments: {
+            ...(((baseParams as Record<string, unknown>).arguments as Record<string, unknown>) ?? {}),
+            ...(typeof authHeaders.Authorization === "string"
+              ? { authorization_header: authHeaders.Authorization }
+              : {}),
+            ...(typeof authHeaders["X-Agent-ID"] === "string"
+              ? { agent_id_header: authHeaders["X-Agent-ID"] }
+              : {}),
+            ...(typeof authHeaders["X-Timestamp"] === "string"
+              ? { timestamp_header: authHeaders["X-Timestamp"] }
+              : {}),
+            ...(typeof authHeaders["X-Signature"] === "string"
+              ? { signature_header: authHeaders["X-Signature"] }
+              : {}),
+            ...(typeof authHeaders["X-Signature-Algorithm"] === "string"
+              ? { algorithm_header: authHeaders["X-Signature-Algorithm"] }
+              : {}),
+          },
+        }
+      : baseParams;
+  body = JSON.stringify({
+    jsonrpc: "2.0",
+    method,
+    params: resolvedParams,
+    id: requestId,
   });
 
   const headers: Record<string, string> = {
