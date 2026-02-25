@@ -2,6 +2,8 @@ import { buildOutboundAuthHeaders } from "../auth/outboundAuth";
 import { AgentError } from "../utils/agentError";
 
 let nextId = 1;
+let sessionId: string | null = null;
+let initialized = false;
 
 interface JsonRpcError {
   code: number;
@@ -9,22 +11,63 @@ interface JsonRpcError {
 }
 
 interface JsonRpcResponse<T = unknown> {
+  id?: number | string | null;
   result?: T;
   error?: JsonRpcError;
 }
 
-async function jsonRpcRequest(method: string, params: unknown, targetAgentDid?: string) {
+function getMcpUrl() {
   if (!process.env.MCP_HTTP_URL) {
     throw new AgentError("MCP_UNAVAILABLE", "MCP_HTTP_URL is not configured", true, 503);
   }
+  return new URL(process.env.MCP_HTTP_URL);
+}
 
+function parseSseJsonResponses(text: string): JsonRpcResponse[] {
+  const lines = text.split(/\r?\n/);
+  const responses: JsonRpcResponse[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) {
+      continue;
+    }
+    const payload = trimmed.slice("data:".length).trim();
+    if (!payload) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(payload) as JsonRpcResponse;
+      responses.push(parsed);
+    } catch {
+      // Ignore non-JSON SSE frames.
+    }
+  }
+  return responses;
+}
+
+function pickRpcResponse(responses: JsonRpcResponse[], requestId: number): JsonRpcResponse | null {
+  for (const response of responses) {
+    if (response.id === requestId) {
+      return response;
+    }
+  }
+  for (const response of responses) {
+    if (typeof response.result !== "undefined" || response.error) {
+      return response;
+    }
+  }
+  return null;
+}
+
+async function postRpc(method: string, params: unknown, targetAgentDid?: string) {
+  const mcpUrl = getMcpUrl();
+  const requestId = nextId++;
   const body = JSON.stringify({
     jsonrpc: "2.0",
     method,
     params,
-    id: nextId++,
+    id: requestId,
   });
-  const mcpUrl = new URL(process.env.MCP_HTTP_URL);
   const authHeaders = await buildOutboundAuthHeaders({
     method: "POST",
     path: mcpUrl.pathname,
@@ -32,37 +75,71 @@ async function jsonRpcRequest(method: string, params: unknown, targetAgentDid?: 
     targetAgentDid,
   });
 
+  const headers: Record<string, string> = {
+    Accept: "application/json, text/event-stream",
+    "Content-Type": "application/json",
+    ...authHeaders,
+  };
+  if (sessionId) {
+    headers["mcp-session-id"] = sessionId;
+  }
+
   const response = await fetch(mcpUrl, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders,
-    },
+    headers,
     body,
   });
+
+  const responseText = await response.text();
+  const responseSessionId = response.headers.get("mcp-session-id");
+  if (responseSessionId) {
+    sessionId = responseSessionId;
+  }
 
   if (!response.ok) {
     throw new AgentError(
       "MCP_UNAVAILABLE",
-      `MCP HTTP ${response.status}: ${await response.text()}`,
+      `MCP HTTP ${response.status}: ${responseText}`,
       true,
       503,
     );
   }
 
-  const json = (await response.json()) as JsonRpcResponse;
-  if (json.error) {
+  const rpcResponses = parseSseJsonResponses(responseText);
+  const rpcResponse = pickRpcResponse(rpcResponses, requestId);
+  if (!rpcResponse) {
+    throw new AgentError("MCP_TOOL_FAILED", "MCP stream response missing JSON-RPC frame", true, 502);
+  }
+  if (rpcResponse.error) {
     throw new AgentError(
       "MCP_TOOL_FAILED",
-      `MCP error ${json.error.code}: ${json.error.message}`,
+      `MCP error ${rpcResponse.error.code}: ${rpcResponse.error.message}`,
       true,
       502,
     );
   }
-  if (typeof json.result === "undefined") {
-    throw new AgentError("MCP_TOOL_FAILED", "MCP response missing result", true, 502);
+  return rpcResponse.result;
+}
+
+async function ensureInitialized() {
+  if (initialized) {
+    return;
   }
-  return json.result;
+
+  const initResult = await postRpc("initialize", {
+    protocolVersion: "2024-11-05",
+    capabilities: {},
+    clientInfo: {
+      name: "aivironment-typescript-agent",
+      version: "1.0.0",
+    },
+  });
+
+  if (!initResult || typeof initResult !== "object") {
+    throw new AgentError("MCP_UNAVAILABLE", "MCP initialize returned invalid result", true, 503);
+  }
+
+  initialized = true;
 }
 
 export async function mcpCallTool(
@@ -70,7 +147,12 @@ export async function mcpCallTool(
   args: Record<string, unknown>,
   targetAgentDid?: string,
 ) {
-  return jsonRpcRequest("tools/call", { name, args }, targetAgentDid);
+  await ensureInitialized();
+  const result = await postRpc("tools/call", { name, args }, targetAgentDid);
+  if (typeof result === "undefined") {
+    throw new AgentError("MCP_TOOL_FAILED", "MCP response missing result", true, 502);
+  }
+  return result;
 }
 
 export async function mcpGetTaskContext(taskId: string, correlationId: string) {
@@ -80,35 +162,31 @@ export async function mcpGetTaskContext(taskId: string, correlationId: string) {
   });
 }
 
-export async function mcpListReachableRoutes(intent: string) {
-  return mcpCallTool("list_reachable_routes", { intent });
+export async function mcpListReachableRoutes(taskId: string) {
+  return mcpCallTool("list_reachable_routes", { task_id: taskId });
 }
 
-export async function mcpGetRouteDetails(connectionSlug: string, targetAgentDid: string) {
+export async function mcpGetRouteDetails(taskId: string, slug: string) {
   return mcpCallTool("get_route_details", {
-    connection_slug: connectionSlug,
-    target_agent_did: targetAgentDid,
+    task_id: taskId,
+    slug,
   });
 }
 
 export async function mcpDelegateTask(params: {
-  connectionSlug: string;
+  taskId: string;
+  connection: string;
   targetAgentDid: string;
   intent: string;
   payload: Record<string, unknown>;
-  context: {
-    correlation_id: string;
-    parent_task_id: string;
-    depth: number;
-    max_depth: number;
-    project_id: string | null;
-  };
+  context: Record<string, unknown>;
 }) {
   return mcpCallTool(
     "delegate_task",
     {
-      connection_slug: params.connectionSlug,
-      target_agent_did: params.targetAgentDid,
+      task_id: params.taskId,
+      connection: params.connection,
+      target_agent: params.targetAgentDid,
       intent: params.intent,
       payload: params.payload,
       context: params.context,

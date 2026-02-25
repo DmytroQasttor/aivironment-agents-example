@@ -60,7 +60,7 @@ export async function buildOutboundAuthHeaders(params: {
   path: string;
   body: string;
   targetAgentDid?: string;
-}) {
+}): Promise<Record<string, string>> {
   const mode = getAuthMode();
   const agentDid = process.env.AGENT_DID;
   if (!agentDid) {
@@ -77,10 +77,11 @@ export async function buildOutboundAuthHeaders(params: {
       );
     }
 
-    return {
+    const headers: Record<string, string> = {
       Authorization: `Bearer ${process.env.AGENT_API_KEY}`,
       "X-Agent-ID": agentDid,
     };
+    return headers;
   }
 
   const alg = process.env.AGENT_SIGNATURE_ALGORITHM ?? "RS256";
@@ -101,10 +102,11 @@ export async function buildOutboundAuthHeaders(params: {
     .setExpirationTime(nowSec + 60)
     .sign(await getPrivateKey(alg));
 
-  return {
+  const headers: Record<string, string> = {
     "X-Agent-ID": agentDid,
     "X-Timestamp": timestampMs,
     "X-Signature": signature,
     "X-Signature-Algorithm": alg,
   };
+  return headers;
 }

@@ -8,13 +8,12 @@ const toolDefinitions = [
   {
     type: "function",
     name: "get_task_context",
-    description: "Fetch context and lineage details for the current task.",
+    description: "Fetch context and lineage details for the current task id.",
     parameters: {
       type: "object",
-      required: ["task_id", "correlation_id"],
+      required: [],
       properties: {
-        task_id: { type: "string" },
-        correlation_id: { type: "string" },
+        max_parent_depth: { type: "number" },
       },
       additionalProperties: false,
     },
@@ -22,12 +21,13 @@ const toolDefinitions = [
   {
     type: "function",
     name: "list_reachable_routes",
-    description: "List active routes this agent can use for delegation.",
+    description: "List active routes this agent can use for delegation from current task.",
     parameters: {
       type: "object",
-      required: ["intent"],
+      required: [],
       properties: {
-        intent: { type: "string" },
+        page: { type: "number" },
+        per_page: { type: "number" },
       },
       additionalProperties: false,
     },
@@ -38,10 +38,9 @@ const toolDefinitions = [
     description: "Get details and schema expectations for a selected route.",
     parameters: {
       type: "object",
-      required: ["connection_slug", "target_agent_did"],
+      required: ["slug"],
       properties: {
-        connection_slug: { type: "string" },
-        target_agent_did: { type: "string" },
+        slug: { type: "string" },
       },
       additionalProperties: false,
     },
@@ -54,14 +53,13 @@ const toolDefinitions = [
     parameters: {
       type: "object",
       required: [
-        "connection_slug",
+        "connection",
         "target_agent_did",
         "intent",
         "payload",
-        "context",
       ],
       properties: {
-        connection_slug: { type: "string" },
+        connection: { type: "string" },
         target_agent_did: { type: "string" },
         intent: { type: "string" },
         payload: { type: "object" },
@@ -96,14 +94,74 @@ function parseJsonArgs(rawArgs: unknown) {
   }
 }
 
-async function runToolCall(call: any) {
+async function runToolCall(call: any, requestTaskId: string) {
   const args = parseJsonArgs(call.arguments);
   switch (call.name) {
     case "get_task_context":
+      return mcpCallTool(
+        "get_task_context",
+        {
+          task_id: requestTaskId,
+          ...(typeof args.max_parent_depth === "number"
+            ? { max_parent_depth: args.max_parent_depth }
+            : {}),
+        },
+      );
     case "list_reachable_routes":
-    case "get_route_details":
-    case "delegate_task":
-      return mcpCallTool(call.name, args, args.target_agent_did as string | undefined);
+      return mcpCallTool("list_reachable_routes", {
+        task_id: requestTaskId,
+        ...(typeof args.page === "number" ? { page: args.page } : {}),
+        ...(typeof args.per_page === "number" ? { per_page: args.per_page } : {}),
+      });
+    case "get_route_details": {
+      const slug =
+        typeof args.slug === "string"
+          ? args.slug
+          : typeof args.connection_slug === "string"
+            ? args.connection_slug
+            : null;
+      if (!slug) {
+        throw new AgentError(
+          "EXECUTION_FAILED",
+          "Model must provide route slug for get_route_details",
+          true,
+          502,
+        );
+      }
+      return mcpCallTool("get_route_details", {
+        task_id: requestTaskId,
+        slug,
+      });
+    }
+    case "delegate_task": {
+      const connection =
+        typeof args.connection === "string"
+          ? args.connection
+          : typeof args.connection_slug === "string"
+            ? args.connection_slug
+            : null;
+      const targetAgentDid = args.target_agent_did;
+      if (!connection || typeof targetAgentDid !== "string") {
+        throw new AgentError(
+          "EXECUTION_FAILED",
+          "Model must provide connection and target_agent_did for delegate_task",
+          true,
+          502,
+        );
+      }
+      return mcpCallTool(
+        "delegate_task",
+        {
+          task_id: requestTaskId,
+          connection,
+          target_agent: targetAgentDid,
+          intent: args.intent,
+          payload: args.payload,
+          ...(args.context && typeof args.context === "object" ? { context: args.context } : {}),
+        },
+        targetAgentDid,
+      );
+    }
     default:
       throw new AgentError(
         "EXECUTION_FAILED",
@@ -156,7 +214,7 @@ async function decideWithLlm(params: {
 
     const toolOutputs = [];
     for (const call of toolCalls) {
-      const result = await runToolCall(call);
+      const result = await runToolCall(call, params.request.task_id);
       toolOutputs.push({
         type: "function_call_output",
         call_id: call.call_id,

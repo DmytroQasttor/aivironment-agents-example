@@ -68,13 +68,12 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "get_task_context",
-        "description": "Fetch context and lineage details for the current task.",
+        "description": "Fetch context and lineage details for the current task id.",
         "parameters": {
             "type": "object",
-            "required": ["task_id", "correlation_id"],
+            "required": [],
             "properties": {
-                "task_id": {"type": "string"},
-                "correlation_id": {"type": "string"},
+                "max_parent_depth": {"type": "number"},
             },
             "additionalProperties": False,
         },
@@ -82,12 +81,13 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "list_reachable_routes",
-        "description": "List active routes this agent can use for delegation.",
+        "description": "List active routes this agent can use for delegation from current task.",
         "parameters": {
             "type": "object",
-            "required": ["intent"],
+            "required": [],
             "properties": {
-                "intent": {"type": "string"},
+                "page": {"type": "number"},
+                "per_page": {"type": "number"},
             },
             "additionalProperties": False,
         },
@@ -98,10 +98,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": "Get details and schema expectations for a selected route.",
         "parameters": {
             "type": "object",
-            "required": ["connection_slug", "target_agent_did"],
+            "required": ["slug"],
             "properties": {
-                "connection_slug": {"type": "string"},
-                "target_agent_did": {"type": "string"},
+                "slug": {"type": "string"},
             },
             "additionalProperties": False,
         },
@@ -115,14 +114,13 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "required": [
-                "connection_slug",
+                "connection",
                 "target_agent_did",
                 "intent",
                 "payload",
-                "context",
             ],
             "properties": {
-                "connection_slug": {"type": "string"},
+                "connection": {"type": "string"},
                 "target_agent_did": {"type": "string"},
                 "intent": {"type": "string"},
                 "payload": {"type": "object"},
@@ -134,7 +132,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
 ]
 
 
-def _run_tool_call(call: Any) -> Any:
+def _run_tool_call(call: Any, request_task_id: str) -> Any:
     args = _parse_json(
         call.arguments if isinstance(call.arguments, str) else "{}",
         "Model produced invalid tool arguments",
@@ -151,7 +149,52 @@ def _run_tool_call(call: Any) -> Any:
             False,
             400,
         )
-    return mcp_call_tool(call.name, args, args.get("target_agent_did"))
+
+    if call.name == "get_task_context":
+        tool_args = {"task_id": request_task_id}
+        if isinstance(args.get("max_parent_depth"), (int, float)):
+            tool_args["max_parent_depth"] = args["max_parent_depth"]
+        return mcp_call_tool("get_task_context", tool_args)
+
+    if call.name == "list_reachable_routes":
+        tool_args = {"task_id": request_task_id}
+        if isinstance(args.get("page"), (int, float)):
+            tool_args["page"] = args["page"]
+        if isinstance(args.get("per_page"), (int, float)):
+            tool_args["per_page"] = args["per_page"]
+        return mcp_call_tool("list_reachable_routes", tool_args)
+
+    if call.name == "get_route_details":
+        slug = args.get("slug") or args.get("connection_slug")
+        if not isinstance(slug, str) or not slug:
+            raise AgentError(
+                "EXECUTION_FAILED",
+                "Model must provide route slug for get_route_details",
+                True,
+                502,
+            )
+        return mcp_call_tool("get_route_details", {"task_id": request_task_id, "slug": slug})
+
+    connection = args.get("connection") or args.get("connection_slug")
+    target_agent_did = args.get("target_agent_did")
+    if not isinstance(connection, str) or not isinstance(target_agent_did, str):
+        raise AgentError(
+            "EXECUTION_FAILED",
+            "Model must provide connection and target_agent_did for delegate_task",
+            True,
+            502,
+        )
+
+    delegate_args: dict[str, Any] = {
+        "task_id": request_task_id,
+        "connection": connection,
+        "target_agent": target_agent_did,
+        "intent": args.get("intent"),
+        "payload": args.get("payload"),
+    }
+    if isinstance(args.get("context"), dict):
+        delegate_args["context"] = args["context"]
+    return mcp_call_tool("delegate_task", delegate_args, target_agent_did)
 
 
 def _decide_with_llm(task: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -197,7 +240,7 @@ def _decide_with_llm(task: dict[str, Any], payload: dict[str, Any]) -> dict[str,
 
         tool_outputs: list[dict[str, Any]] = []
         for call in tool_calls:
-            result = _run_tool_call(call)
+            result = _run_tool_call(call, task["task_id"])
             tool_outputs.append(
                 {
                     "type": "function_call_output",

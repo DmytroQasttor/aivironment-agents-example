@@ -68,7 +68,7 @@ cp .env.example .env
 
 - `AGENT_DID`
 - `AGENT_AUTH_MODE` (`simple` or `advanced`)
-- `MCP_HTTP_URL`
+- `MCP_HTTP_URL` (Xano MCP stream endpoint, e.g. `.../mcp/stream`)
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
 - `OPENAI_MAX_OUTPUT_TOKENS` (optional, default `1200`)

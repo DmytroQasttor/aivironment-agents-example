@@ -40,7 +40,7 @@ Default port: `3300`.
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
 - `OPENAI_MAX_OUTPUT_TOKENS` (optional, default `1200`)
-- `MCP_HTTP_URL`
+- `MCP_HTTP_URL` (Xano MCP stream endpoint, e.g. `.../mcp/stream`)
 
 Simple mode:
 - `AGENT_SECRET`
