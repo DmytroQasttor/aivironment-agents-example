@@ -1,4 +1,5 @@
 import json
+import os
 from typing import Any
 
 from openai import OpenAI
@@ -21,6 +22,27 @@ def _get_openai_client() -> OpenAI:
 
 def _get_model() -> str:
     return require_env("OPENAI_MODEL", "OPENAI_MODEL is required")
+
+
+def _get_max_output_tokens() -> int:
+    raw = os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "1200")
+    try:
+        parsed = int(raw)
+    except Exception:
+        raise AgentError(
+            "CONFIG_INVALID",
+            "OPENAI_MAX_OUTPUT_TOKENS must be a positive integer",
+            False,
+            500,
+        )
+    if parsed <= 0:
+        raise AgentError(
+            "CONFIG_INVALID",
+            "OPENAI_MAX_OUTPUT_TOKENS must be a positive integer",
+            False,
+            500,
+        )
+    return parsed
 
 
 def _parse_json(text: str, error_message: str) -> dict[str, Any]:
@@ -134,6 +156,7 @@ def _run_tool_call(call: Any) -> Any:
 
 def _decide_with_llm(task: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     model = _get_model()
+    max_output_tokens = _get_max_output_tokens()
     client = _get_openai_client()
     initial_prompt = "\n".join(
         [
@@ -163,6 +186,7 @@ def _decide_with_llm(task: dict[str, Any], payload: dict[str, Any]) -> dict[str,
         model=model,
         input=initial_prompt,
         tools=TOOL_DEFINITIONS,
+        max_output_tokens=max_output_tokens,
     )
 
     for _ in range(12):
@@ -187,6 +211,7 @@ def _decide_with_llm(task: dict[str, Any], payload: dict[str, Any]) -> dict[str,
             previous_response_id=response.id,
             input=tool_outputs,
             tools=TOOL_DEFINITIONS,
+            max_output_tokens=max_output_tokens,
         )
 
     return _parse_json(

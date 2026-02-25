@@ -71,6 +71,7 @@ cp .env.example .env
 - `MCP_HTTP_URL`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
+- `OPENAI_MAX_OUTPUT_TOKENS` (optional, default `1200`)
 
 For `simple` mode:
 - `AGENT_SECRET`

@@ -32,6 +32,7 @@ Default port: `3200`.
 - `MCP_HTTP_URL`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
+- `OPENAI_MAX_OUTPUT_TOKENS` (optional, default `1200`)
 
 Simple mode:
 - `AGENT_SECRET`

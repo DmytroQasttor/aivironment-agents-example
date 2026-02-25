@@ -25,11 +25,30 @@ export function getOpenAIModel() {
   return process.env.OPENAI_MODEL;
 }
 
+export function getOpenAIMaxOutputTokens() {
+  const rawValue = process.env.OPENAI_MAX_OUTPUT_TOKENS;
+  if (!rawValue) {
+    return 1200;
+  }
+
+  const parsed = Number.parseInt(rawValue, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new AgentError(
+      "CONFIG_INVALID",
+      "OPENAI_MAX_OUTPUT_TOKENS must be a positive integer",
+      false,
+      500,
+    );
+  }
+  return parsed;
+}
+
 export async function askOpenAI(prompt: string) {
   const model = getOpenAIModel();
   const r = await openai.responses.create({
     model,
     input: prompt,
+    max_output_tokens: getOpenAIMaxOutputTokens(),
   });
   return r.output_text;
 }

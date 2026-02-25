@@ -2,7 +2,7 @@ import type { A2AForwardRequest, OpsCoordinatePayload, OpsCoordinateResult } fro
 import { mcpCallTool } from "../mcp/mcpClientHttp";
 import { AgentError } from "../utils/agentError";
 import { validateOpsCoordinateInput, validateOpsCoordinateOutput } from "../validation/schemas";
-import { getOpenAIModel, openai } from "../openai/openaiClient";
+import { getOpenAIMaxOutputTokens, getOpenAIModel, openai } from "../openai/openaiClient";
 
 const toolDefinitions = [
   {
@@ -119,6 +119,7 @@ async function decideWithLlm(params: {
   payload: OpsCoordinatePayload;
 }) {
   const model = getOpenAIModel();
+  const maxOutputTokens = getOpenAIMaxOutputTokens();
   const initialPrompt = [
     "You are Delivery Planning Coordinator.",
     "You may use MCP tools to decide whether to delegate or complete locally.",
@@ -143,6 +144,7 @@ async function decideWithLlm(params: {
     model,
     input: initialPrompt,
     tools: toolDefinitions as any,
+    max_output_tokens: maxOutputTokens,
   });
 
   for (let i = 0; i < 12; i += 1) {
@@ -167,6 +169,7 @@ async function decideWithLlm(params: {
       previous_response_id: response.id,
       input: toolOutputs as any,
       tools: toolDefinitions as any,
+      max_output_tokens: maxOutputTokens,
     });
   }
 

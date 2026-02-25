@@ -1,4 +1,8 @@
-import { getOpenAIClient, getOpenAIModel } from "../openai/openaiClient.js";
+import {
+  getOpenAIClient,
+  getOpenAIMaxOutputTokens,
+  getOpenAIModel,
+} from "../openai/openaiClient.js";
 import {
   mcpCallTool,
 } from "../mcp/mcpClientHttp.js";
@@ -115,6 +119,7 @@ async function runToolCall(call) {
 
 async function decideWithLlm({ request, payload }) {
   const model = getOpenAIModel();
+  const maxOutputTokens = getOpenAIMaxOutputTokens();
   const initialPrompt = [
     "You are Execution Task Coordinator.",
     "You may use MCP tools to decide whether to delegate or complete locally.",
@@ -140,6 +145,7 @@ async function decideWithLlm({ request, payload }) {
     model,
     input: initialPrompt,
     tools: toolDefinitions,
+    max_output_tokens: maxOutputTokens,
   });
 
   for (let i = 0; i < 12; i += 1) {
@@ -165,6 +171,7 @@ async function decideWithLlm({ request, payload }) {
       previous_response_id: response.id,
       input: toolOutputs,
       tools: toolDefinitions,
+      max_output_tokens: maxOutputTokens,
     });
   }
 

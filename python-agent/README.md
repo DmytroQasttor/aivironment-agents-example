@@ -39,6 +39,7 @@ Default port: `3300`.
 - `AGENT_AUTH_MODE` (`simple` or `advanced`)
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
+- `OPENAI_MAX_OUTPUT_TOKENS` (optional, default `1200`)
 - `MCP_HTTP_URL`
 
 Simple mode:
