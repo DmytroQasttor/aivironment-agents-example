@@ -104,7 +104,34 @@ function isUuid(value: string) {
   );
 }
 
-function extractConnectionId(routeDetails: unknown): string | null {
+function parsePossibleJson(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function unwrapMcpResult(result: unknown): unknown {
+  if (!isPlainObject(result)) {
+    return result;
+  }
+  const content = result.content;
+  if (!Array.isArray(content) || content.length === 0) {
+    return result;
+  }
+  const first = content[0];
+  if (!isPlainObject(first) || typeof first.text !== "string") {
+    return result;
+  }
+  return parsePossibleJson(first.text);
+}
+
+function extractConnectionId(routeDetailsRaw: unknown): string | null {
+  const routeDetails = unwrapMcpResult(routeDetailsRaw);
   if (!isPlainObject(routeDetails)) {
     return null;
   }
@@ -128,6 +155,36 @@ function extractConnectionId(routeDetails: unknown): string | null {
       if (typeof candidate === "string" && isUuid(candidate)) {
         return candidate;
       }
+    }
+  }
+  if (isPlainObject(routeDetails.payload)) {
+    const payloadCandidates = [
+      routeDetails.payload.connection,
+      routeDetails.payload.connection_id,
+      routeDetails.payload.id,
+    ];
+    for (const candidate of payloadCandidates) {
+      if (typeof candidate === "string" && isUuid(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return null;
+}
+
+function extractTargetDid(routeDetailsRaw: unknown): string | null {
+  const routeDetails = unwrapMcpResult(routeDetailsRaw);
+  if (!isPlainObject(routeDetails)) {
+    return null;
+  }
+  const candidates = [
+    routeDetails.target_agent_did,
+    isPlainObject(routeDetails.route) ? routeDetails.route.target_agent_did : undefined,
+    isPlainObject(routeDetails.payload) ? routeDetails.payload.target_agent_did : undefined,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.length > 0) {
+      return candidate;
     }
   }
   return null;
@@ -179,7 +236,7 @@ async function runToolCall(call: any, requestTaskId: string) {
           : typeof args.connection_slug === "string"
             ? args.connection_slug
             : null;
-      const targetAgentDid = args.target_agent_did;
+      let targetAgentDid = args.target_agent_did;
       if (!connection || typeof targetAgentDid !== "string") {
         throw new AgentError(
           "EXECUTION_FAILED",
@@ -196,6 +253,7 @@ async function runToolCall(call: any, requestTaskId: string) {
           slug: connection,
         });
         resolvedConnection = extractConnectionId(routeDetails) ?? connection;
+        targetAgentDid = extractTargetDid(routeDetails) ?? targetAgentDid;
       }
       if (!isPlainObject(args.payload)) {
         if (!routeDetails && !isUuid(connection)) {

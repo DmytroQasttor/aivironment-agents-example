@@ -70,7 +70,29 @@ def _is_uuid(value: str) -> bool:
     )
 
 
-def _extract_connection_id(route_details: Any) -> str | None:
+def _parse_possible_json(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except Exception:
+        return value
+
+
+def _unwrap_mcp_result(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    content = value.get("content")
+    if not isinstance(content, list) or len(content) == 0:
+        return value
+    first = content[0]
+    if not isinstance(first, dict) or not isinstance(first.get("text"), str):
+        return value
+    return _parse_possible_json(first.get("text"))
+
+
+def _extract_connection_id(route_details_raw: Any) -> str | None:
+    route_details = _unwrap_mcp_result(route_details_raw)
     if not isinstance(route_details, dict):
         return None
     for key in ("connection", "connection_id", "id"):
@@ -83,6 +105,35 @@ def _extract_connection_id(route_details: Any) -> str | None:
             candidate = nested.get(key)
             if isinstance(candidate, str) and _is_uuid(candidate):
                 return candidate
+    payload = route_details.get("payload")
+    if isinstance(payload, dict):
+        for key in ("connection", "connection_id", "id"):
+            candidate = payload.get(key)
+            if isinstance(candidate, str) and _is_uuid(candidate):
+                return candidate
+    return None
+
+
+def _extract_target_did(route_details_raw: Any) -> str | None:
+    route_details = _unwrap_mcp_result(route_details_raw)
+    if not isinstance(route_details, dict):
+        return None
+    candidates = [
+        route_details.get("target_agent_did"),
+        (
+            route_details.get("route", {}).get("target_agent_did")
+            if isinstance(route_details.get("route"), dict)
+            else None
+        ),
+        (
+            route_details.get("payload", {}).get("target_agent_did")
+            if isinstance(route_details.get("payload"), dict)
+            else None
+        ),
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, str) and len(candidate) > 0:
+            return candidate
     return None
 
 
@@ -227,6 +278,9 @@ def _run_tool_call(call: Any, request_task_id: str) -> Any:
         extracted = _extract_connection_id(route_details)
         if isinstance(extracted, str):
             resolved_connection = extracted
+        resolved_target = _extract_target_did(route_details)
+        if isinstance(resolved_target, str):
+            target_agent_did = resolved_target
     if not _is_plain_object(args.get("payload")):
         if route_details is None and not _is_uuid(connection):
             route_details = mcp_call_tool(

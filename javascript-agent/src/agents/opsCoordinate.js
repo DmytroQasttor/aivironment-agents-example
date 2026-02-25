@@ -112,7 +112,30 @@ function isUuid(value) {
   );
 }
 
-function extractConnectionId(routeDetails) {
+function parsePossibleJson(value) {
+  if (typeof value !== "string") {
+    return value;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function unwrapMcpResult(result) {
+  if (!isPlainObject(result) || !Array.isArray(result.content) || result.content.length === 0) {
+    return result;
+  }
+  const first = result.content[0];
+  if (!isPlainObject(first) || typeof first.text !== "string") {
+    return result;
+  }
+  return parsePossibleJson(first.text);
+}
+
+function extractConnectionId(routeDetailsRaw) {
+  const routeDetails = unwrapMcpResult(routeDetailsRaw);
   if (!isPlainObject(routeDetails)) {
     return null;
   }
@@ -136,6 +159,36 @@ function extractConnectionId(routeDetails) {
       if (typeof candidate === "string" && isUuid(candidate)) {
         return candidate;
       }
+    }
+  }
+  if (isPlainObject(routeDetails.payload)) {
+    const payloadCandidates = [
+      routeDetails.payload.connection,
+      routeDetails.payload.connection_id,
+      routeDetails.payload.id,
+    ];
+    for (const candidate of payloadCandidates) {
+      if (typeof candidate === "string" && isUuid(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return null;
+}
+
+function extractTargetDid(routeDetailsRaw) {
+  const routeDetails = unwrapMcpResult(routeDetailsRaw);
+  if (!isPlainObject(routeDetails)) {
+    return null;
+  }
+  const candidates = [
+    routeDetails.target_agent_did,
+    isPlainObject(routeDetails.route) ? routeDetails.route.target_agent_did : undefined,
+    isPlainObject(routeDetails.payload) ? routeDetails.payload.target_agent_did : undefined,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.length > 0) {
+      return candidate;
     }
   }
   return null;
@@ -187,7 +240,7 @@ async function runToolCall(call, requestTaskId) {
           : typeof args.connection_slug === "string"
             ? args.connection_slug
             : null;
-      const targetAgentDid = args.target_agent_did;
+      let targetAgentDid = args.target_agent_did;
       if (!connection || typeof targetAgentDid !== "string") {
         throw new AgentError(
           "EXECUTION_FAILED",
@@ -204,6 +257,7 @@ async function runToolCall(call, requestTaskId) {
           slug: connection,
         });
         resolvedConnection = extractConnectionId(routeDetails) ?? connection;
+        targetAgentDid = extractTargetDid(routeDetails) ?? targetAgentDid;
       }
       if (!isPlainObject(args.payload)) {
         if (!routeDetails && !isUuid(connection)) {
