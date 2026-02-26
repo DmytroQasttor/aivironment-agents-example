@@ -23,6 +23,7 @@ interface ToolAuthSpec {
   targetAgentDid?: string;
 }
 
+// MCP stream endpoint configured by deploy/dev environment.
 function getMcpUrl() {
   if (!process.env.MCP_HTTP_URL) {
     throw new AgentError("MCP_UNAVAILABLE", "MCP_HTTP_URL is not configured", true, 503);
@@ -30,6 +31,7 @@ function getMcpUrl() {
   return new URL(process.env.MCP_HTTP_URL);
 }
 
+// Xano MCP stream responds as SSE frames; extract JSON-RPC payloads from `data:` lines.
 function parseSseJsonResponses(text: string): JsonRpcResponse[] {
   const lines = text.split(/\r?\n/);
   const responses: JsonRpcResponse[] = [];
@@ -52,6 +54,7 @@ function parseSseJsonResponses(text: string): JsonRpcResponse[] {
   return responses;
 }
 
+// Prefer exact id match, then fallback to first frame carrying result/error.
 function pickRpcResponse(responses: JsonRpcResponse[], requestId: number): JsonRpcResponse | null {
   for (const response of responses) {
     if (response.id === requestId) {
@@ -84,10 +87,16 @@ function sortKeysDeep(value: unknown): unknown {
   return sorted;
 }
 
+// Canonical JSON serializer used for advanced-signature body hash parity.
 function canonicalJson(value: unknown) {
   return JSON.stringify(sortKeysDeep(value));
 }
 
+/**
+ * Maps each MCP tool call to the platform auth canonical target:
+ * method + path + body + optional target DID.
+ * This is required for advanced auth signatures to match backend verification.
+ */
 function resolveToolAuthSpec(params: unknown): ToolAuthSpec | null {
   if (!isRecord(params)) {
     return null;
@@ -148,6 +157,7 @@ function resolveToolAuthSpec(params: unknown): ToolAuthSpec | null {
   return null;
 }
 
+// Injects auth headers into MCP tool arguments (`*_header` fields expected by backend tools).
 async function withToolAuthArguments(params: unknown): Promise<unknown> {
   if (!isRecord(params) || !isRecord(params.arguments)) {
     return params;
@@ -187,6 +197,7 @@ async function withToolAuthArguments(params: unknown): Promise<unknown> {
   };
 }
 
+// Sends one JSON-RPC call over MCP stream transport.
 async function postRpc(method: string, params: unknown, targetAgentDid?: string) {
   const mcpUrl = getMcpUrl();
   const requestId = nextId++;
@@ -253,6 +264,7 @@ async function postRpc(method: string, params: unknown, targetAgentDid?: string)
   return rpcResponse.result;
 }
 
+// Initializes MCP session once per process.
 async function ensureInitialized() {
   if (initialized) {
     return;
@@ -274,6 +286,7 @@ async function ensureInitialized() {
   initialized = true;
 }
 
+// Generic tool invoker used by intent logic.
 export async function mcpCallTool(
   name: string,
   args: Record<string, unknown>,
@@ -287,6 +300,7 @@ export async function mcpCallTool(
   return result;
 }
 
+// Convenience wrappers used by examples/tests and documentation readability.
 export async function mcpGetTaskContext(taskId: string, correlationId: string) {
   return mcpCallTool("get_task_context", {
     task_id: taskId,

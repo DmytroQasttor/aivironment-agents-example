@@ -18,6 +18,7 @@ def _build_canonical_string(
     body: str,
     target_agent_did: str | None = None,
 ) -> str:
+    """Canonical format used by platform advanced signature verifier."""
     return "\n".join(
         [
             method.upper(),

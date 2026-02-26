@@ -5,6 +5,7 @@ import { AgentError } from "../utils/agentError";
 
 let jwksResolver: ReturnType<typeof createRemoteJWKSet> | null = null;
 
+// Extracts bearer token or throws auth error used by handler normalization.
 function getBearerToken(headers: IncomingHttpHeaders): string {
   const authorization = headers.authorization;
   if (!authorization || !authorization.startsWith("Bearer ")) {
@@ -13,6 +14,7 @@ function getBearerToken(headers: IncomingHttpHeaders): string {
   return authorization.slice("Bearer ".length).trim();
 }
 
+// Lazily initialized JWKS resolver; reused across requests.
 function getJwksResolver() {
   if (!jwksResolver) {
     if (!process.env.PLATFORM_JWKS_URL) {
@@ -28,6 +30,7 @@ function getJwksResolver() {
   return jwksResolver;
 }
 
+// Canonical JSON helper used for inbound body_hash parity with platform signer.
 function sortKeysDeep(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map((item) => sortKeysDeep(item));
@@ -42,6 +45,8 @@ function sortKeysDeep(value: unknown): unknown {
   return sorted;
 }
 
+// Preferred body hash path: parse -> deep-sort keys -> stringify -> sha256.
+// Fallback to raw bytes hash if body is not valid JSON.
 function canonicalBodyHash(rawBody: Buffer) {
   try {
     const parsed = JSON.parse(rawBody.toString("utf8")) as unknown;
@@ -52,6 +57,11 @@ function canonicalBodyHash(rawBody: Buffer) {
   }
 }
 
+/**
+ * Verifies platform->agent inbound auth.
+ * Current protocol expects JWT bearer for both simple and advanced target agents.
+ * Additional claim checks are applied when those claims are present.
+ */
 export async function verifyInboundAuth(params: {
   headers: IncomingHttpHeaders;
   rawBody: Buffer;

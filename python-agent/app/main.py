@@ -6,6 +6,7 @@ from app.handlers import a2a_handler, health_handler
 
 app = FastAPI(title="Compliance Risk Auditor", version="1.0.0")
 
+# Raw body is consumed in handler for canonical hash/auth verification.
 app.add_api_route("/health", health_handler, methods=["GET"])
 app.add_api_route("/a2a", a2a_handler, methods=["POST"])
 

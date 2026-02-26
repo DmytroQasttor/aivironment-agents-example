@@ -1,9 +1,11 @@
 import Ajv from "ajv";
 import addFormats from "ajv-formats";
 
+// Strict validation keeps examples aligned with production contracts.
 const ajv = new Ajv({ allErrors: true, strict: true });
 addFormats(ajv);
 
+// Envelope schema forwarded by platform to `/a2a`.
 const a2aForwardSchema = {
   type: "object",
   required: ["type", "task_id", "timestamp", "source", "intent", "payload", "context"],
@@ -38,6 +40,7 @@ const a2aForwardSchema = {
   additionalProperties: true,
 };
 
+// Blueprint 02 input schema for `ops.orchestrate`.
 const opsCoordinateInputSchema = {
   type: "object",
   required: ["objective", "priority", "constraints", "metadata"],
@@ -68,6 +71,7 @@ const opsCoordinateInputSchema = {
   additionalProperties: true,
 };
 
+// Blueprint 02 output schema for response result.
 const opsCoordinateOutputSchema = {
   type: "object",
   required: ["plan", "actions"],
@@ -79,6 +83,7 @@ const opsCoordinateOutputSchema = {
   additionalProperties: true,
 };
 
+// Optional schema for intermediate model decision format.
 const llmDecisionSchema = {
   type: "object",
   required: ["plan", "actions", "delegate_compliance"],
@@ -102,6 +107,7 @@ function formatErrors(errors) {
   return (errors ?? []).map((e) => `${e.instancePath || "/"} ${e.message}`);
 }
 
+// Validation wrappers return normalized error strings used by handlers.
 export function validateA2AForwardEnvelope(value) {
   const ok = validateA2A(value);
   return ok

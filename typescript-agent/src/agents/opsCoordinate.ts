@@ -4,6 +4,8 @@ import { AgentError } from "../utils/agentError";
 import { validateOpsCoordinateInput, validateOpsCoordinateOutput } from "../validation/schemas";
 import { getOpenAIMaxOutputTokens, getOpenAIModel, openai } from "../openai/openaiClient";
 
+// Tool catalog exposed to OpenAI tool-calling loop.
+// The model decides which tools to invoke, in what order, and whether to delegate.
 const toolDefinitions = [
   {
     type: "function",
@@ -70,6 +72,7 @@ const toolDefinitions = [
   },
 ];
 
+// Final guard: we never return model output unless it matches the declared result schema.
 function ensureValidOutput(result: unknown) {
   const outputValidation = validateOpsCoordinateOutput(result);
   if (!outputValidation.ok) {
@@ -83,6 +86,7 @@ function ensureValidOutput(result: unknown) {
   return outputValidation.value;
 }
 
+// OpenAI function-call arguments are returned as JSON strings.
 function parseJsonArgs(rawArgs: unknown) {
   if (!rawArgs || typeof rawArgs !== "string") {
     return {} as Record<string, unknown>;
@@ -98,12 +102,14 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// Helper used to reject UUID in route-slug fields when delegate_task expects slugs.
 function isUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     value,
   );
 }
 
+// MCP sometimes returns nested JSON as a string; this helper keeps parsing tolerant.
 function parsePossibleJson(value: unknown): unknown {
   if (typeof value !== "string") {
     return value;
@@ -115,6 +121,7 @@ function parsePossibleJson(value: unknown): unknown {
   }
 }
 
+// Xano MCP may wrap usable payload in SSE content[0].text, so we unwrap where possible.
 function unwrapMcpResult(result: unknown): unknown {
   if (!isPlainObject(result)) {
     return result;
@@ -130,6 +137,8 @@ function unwrapMcpResult(result: unknown): unknown {
   return parsePossibleJson(first.text);
 }
 
+// Attempts to discover connection UUID from various possible MCP response shapes.
+// Kept for compatibility with historical payloads and debugging traces.
 function extractConnectionId(routeDetailsRaw: unknown): string | null {
   const routeDetails = unwrapMcpResult(routeDetailsRaw);
   if (!isPlainObject(routeDetails)) {
@@ -172,6 +181,7 @@ function extractConnectionId(routeDetailsRaw: unknown): string | null {
   return null;
 }
 
+// Extracts target agent DID from route details regardless of nesting variant.
 function extractTargetDid(routeDetailsRaw: unknown): string | null {
   const routeDetails = unwrapMcpResult(routeDetailsRaw);
   if (!isPlainObject(routeDetails)) {
@@ -190,6 +200,7 @@ function extractTargetDid(routeDetailsRaw: unknown): string | null {
   return null;
 }
 
+// Extracts input schema for a given intent from route metadata (if provided).
 function extractIntentInputSchema(routeDetailsRaw: unknown, intent: string): Record<string, unknown> | null {
   const routeDetails = unwrapMcpResult(routeDetailsRaw);
   if (!isPlainObject(routeDetails)) {
@@ -242,6 +253,7 @@ function extractIntentInputSchema(routeDetailsRaw: unknown, intent: string): Rec
   return null;
 }
 
+// Reorders payload keys using schema property order first to improve cross-system parity/readability.
 function normalizePayloadBySchema(
   payload: Record<string, unknown>,
   inputSchema: Record<string, unknown> | null,
@@ -264,6 +276,13 @@ function normalizePayloadBySchema(
   return normalized;
 }
 
+/**
+ * Executes one model-requested tool call.
+ * This function is the policy boundary that:
+ * - validates required tool args
+ * - maps model tool names to MCP tools
+ * - enforces delegation safety constraints (route slug, payload object)
+ */
 async function runToolCall(call: any, requestTaskId: string) {
   const args = parseJsonArgs(call.arguments);
   switch (call.name) {
@@ -320,6 +339,7 @@ async function runToolCall(call: any, requestTaskId: string) {
         );
       }
       let routeDetails: unknown = null;
+      // Platform runtime expects route slug in `connection` for delegate_task.
       if (isUuid(connection)) {
         return {
           error: {
@@ -349,6 +369,7 @@ async function runToolCall(call: any, requestTaskId: string) {
           route_details: routeDetails,
         };
       }
+      // Context defaults to {} to match platform canonical hashing behavior.
       return mcpCallTool(
         "delegate_task",
         {
@@ -372,6 +393,13 @@ async function runToolCall(call: any, requestTaskId: string) {
   }
 }
 
+/**
+ * LLM orchestration loop:
+ * - starts with task + context prompt
+ * - executes tool calls requested by model
+ * - feeds tool outputs back until model stops calling tools
+ * - requires strict JSON final output
+ */
 async function decideWithLlm(params: {
   request: A2AForwardRequest;
   payload: OpsCoordinatePayload;
@@ -406,6 +434,7 @@ async function decideWithLlm(params: {
   });
 
   for (let i = 0; i < 12; i += 1) {
+    // Hard iteration cap prevents unbounded tool loops.
     const outputItems = Array.isArray(response.output) ? response.output : [];
     const toolCalls = outputItems.filter((item: any) => item.type === "function_call");
     if (toolCalls.length === 0) {
@@ -443,6 +472,7 @@ async function decideWithLlm(params: {
     });
   }
 
+  // We require machine-parseable JSON to maintain stable platform contracts.
   try {
     return JSON.parse(response.output_text);
   } catch {
@@ -450,6 +480,10 @@ async function decideWithLlm(params: {
   }
 }
 
+/**
+ * Blueprint 01 intent handler (`ops.coordinate`).
+ * Validates input, runs LLM/tool orchestration, normalizes result shape, validates output.
+ */
 export async function runOpsCoordinate(request: A2AForwardRequest) {
   const inputValidation = validateOpsCoordinateInput(request.payload);
   if (!inputValidation.ok) {

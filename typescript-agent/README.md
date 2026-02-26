@@ -15,6 +15,30 @@ Use this agent to manually validate full platform workflow in UI:
 - delegation + lineage behavior,
 - normalized `a2a_response` output.
 
+## High-Level flow
+
+This agent implements the same runtime pattern expected from real 3rd-party integrations:
+
+1. Platform forwards a task to `POST /a2a` as `a2a_forward`.
+2. Agent validates the raw JSON envelope structure with AJV (`src/validation/schemas.ts`).
+3. Agent verifies platform JWT auth (`src/auth/inboundAuth.ts`):
+   - signature against `PLATFORM_JWKS_URL`
+   - required claims (`aud`, `iss`, `task_id`)
+   - optional parity claims when present (`method`, `path`, `body_hash`, `source_agent`)
+4. Agent routes by `intent` in `src/agentRunner.ts`.
+5. For `ops.coordinate`, the handler (`src/agents/opsCoordinate.ts`) does:
+   - payload schema validation
+   - OpenAI Responses API tool-calling loop
+   - MCP tool invocation via stream transport (`src/mcp/mcpClientHttp.ts`)
+6. During MCP tool calls, outbound auth is injected (`src/auth/outboundAuth.ts`):
+   - simple mode: bearer API key + agent DID
+   - advanced mode: canonical request string signed as JWS (RS256 by default)
+7. Handler returns normalized `a2a_response`:
+   - `status: completed` + JSON object `result`
+   - or `status: failed` + structured `error`
+
+This keeps behavior deterministic for platform E2E tests while still allowing LLM-driven decisions at runtime.
+
 ## Features
 
 - `POST /a2a` endpoint with strict `a2a_forward` envelope validation
@@ -111,6 +135,34 @@ npm start
 
 Supported intent:
 - `ops.coordinate`
+
+## Authorization model
+
+Platform -> Agent (`/a2a`):
+- `Authorization: Bearer <platform_jwt>`
+- Agent validates JWT via JWKS and optional claim parity checks.
+
+Agent -> Platform and MCP tools:
+- `AGENT_AUTH_MODE=simple`
+  - `Authorization: Bearer <agent_secret_or_key>`
+  - `X-Agent-ID: <agent_did>`
+- `AGENT_AUTH_MODE=advanced`
+  - `X-Agent-ID`
+  - `X-Timestamp` (epoch ms)
+  - `X-Signature-Algorithm` (default `RS256`)
+  - `X-Signature` (JWS over canonical string)
+
+Advanced canonical format:
+
+```text
+{METHOD}
+{PATH}
+{TIMESTAMP_MS}
+{TARGET_AGENT_DID_OR_EMPTY}
+sha256:{BODY_HASH_HEX}
+```
+
+For body hash parity, this example canonicalizes JSON by recursively sorting object keys before hashing.
 
 ## Response contract (outbound)
 

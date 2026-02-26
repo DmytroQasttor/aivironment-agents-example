@@ -14,6 +14,7 @@ from app.validation import validate_a2a_forward_envelope
 
 
 async def health_handler() -> JSONResponse:
+    """Lightweight probe endpoint for deploy checks and monitoring."""
     return JSONResponse(
         {
             "status": "ok",
@@ -24,6 +25,13 @@ async def health_handler() -> JSONResponse:
 
 
 async def a2a_handler(request: Request) -> JSONResponse:
+    """
+    Platform-facing request lifecycle:
+    1) parse + validate forwarded envelope
+    2) verify inbound JWT auth
+    3) run intent handler
+    4) return normalized a2a_response
+    """
     # Use raw bytes because signature verification depends on exact payload bytes.
     raw_body = await request.body()
     if not raw_body:
@@ -63,6 +71,7 @@ async def a2a_handler(request: Request) -> JSONResponse:
     )
     depth = context.get("depth") if isinstance(context.get("depth"), (int, float)) else 0
     try:
+        # Reject unauthenticated requests before intent logic executes.
         verify_inbound_auth(
             headers=dict(request.headers),
             raw_body=raw_body,
@@ -81,6 +90,7 @@ async def a2a_handler(request: Request) -> JSONResponse:
         result = run_agent(task)
         return JSONResponse(build_a2a_success(task["task_id"], result))
     except Exception as err:
+        # Normalize unknown exceptions into retryable execution errors.
         agent_error = (
             err
             if isinstance(err, AgentError)

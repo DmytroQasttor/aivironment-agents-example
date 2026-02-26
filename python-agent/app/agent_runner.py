@@ -3,6 +3,7 @@ from app.errors import AgentError
 
 
 def run_agent(task: dict) -> dict:
+    """Central intent router for this agent profile."""
     intent = task.get("intent")
     if intent == "ops.audit":
         return run_ops_audit(task)

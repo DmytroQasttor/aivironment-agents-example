@@ -1,10 +1,12 @@
 import OpenAI from "openai";
 import { AgentError } from "../utils/agentError";
 
+// Shared OpenAI client used by intent handlers.
 export const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// Validates required model config before each LLM run.
 export function getOpenAIModel() {
   if (!process.env.OPENAI_API_KEY) {
     throw new AgentError(
@@ -25,6 +27,7 @@ export function getOpenAIModel() {
   return process.env.OPENAI_MODEL;
 }
 
+// Optional per-request output token ceiling (cost/safety control).
 export function getOpenAIMaxOutputTokens() {
   const rawValue = process.env.OPENAI_MAX_OUTPUT_TOKENS;
   if (!rawValue) {
@@ -43,6 +46,7 @@ export function getOpenAIMaxOutputTokens() {
   return parsed;
 }
 
+// Simple text helper kept for experimentation and quick smoke checks.
 export async function askOpenAI(prompt: string) {
   const model = getOpenAIModel();
   const r = await openai.responses.create({

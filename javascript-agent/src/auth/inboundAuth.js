@@ -5,6 +5,7 @@ import { getAgentDid, requireEnv } from "../config/runtime.js";
 
 let jwksResolver = null;
 
+// Lazily cached JWKS resolver used to verify platform JWTs.
 function getJwksResolver() {
   if (!jwksResolver) {
     const jwksUrl = requireEnv(
@@ -16,6 +17,7 @@ function getJwksResolver() {
   return jwksResolver;
 }
 
+// Canonicalizer aligns JSON body hashing with platform verifier behavior.
 function sortKeysDeep(value) {
   if (Array.isArray(value)) {
     return value.map((item) => sortKeysDeep(item));
@@ -40,6 +42,10 @@ function canonicalBodyHash(rawBody) {
   }
 }
 
+/**
+ * Verifies platform -> agent auth envelope.
+ * JWT is required and validated against JWKS and expected claims.
+ */
 export async function verifyInboundAuth({ headers, rawBody, taskId, correlationId }) {
   const agentDid = getAgentDid();
   const auth = headers.authorization;

@@ -9,6 +9,7 @@ function sha256Hex(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
+// Canonical string contract expected by platform advanced verifier.
 function buildCanonicalString({ method, path, timestampMs, targetAgentDid, body }) {
   return [
     method.toUpperCase(),
@@ -19,6 +20,7 @@ function buildCanonicalString({ method, path, timestampMs, targetAgentDid, body 
   ].join("\n");
 }
 
+// Private key import is cached for repeated signing.
 async function getPrivateKey(alg) {
   if (!privateKeyPromise) {
     const privatePem = requireEnv(
@@ -30,6 +32,7 @@ async function getPrivateKey(alg) {
   return privateKeyPromise;
 }
 
+// Builds outbound headers for both /a2a/send and MCP tool auth injection.
 export async function buildOutboundAuthHeaders({
   method,
   path,

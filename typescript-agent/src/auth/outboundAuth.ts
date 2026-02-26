@@ -6,6 +6,7 @@ type AuthMode = "simple" | "advanced";
 
 let privateKeyPromise: ReturnType<typeof importPKCS8> | null = null;
 
+// Reads and validates selected auth mode once per call site.
 function getAuthMode(): AuthMode {
   const mode = (process.env.AGENT_AUTH_MODE ?? "simple").toLowerCase();
   if (mode !== "simple" && mode !== "advanced") {
@@ -23,6 +24,7 @@ function sha256Hex(data: string): string {
   return crypto.createHash("sha256").update(data).digest("hex");
 }
 
+// Canonical string expected by platform advanced verifier.
 function buildCanonicalString(params: {
   method: string;
   path: string;
@@ -39,6 +41,7 @@ function buildCanonicalString(params: {
   ].join("\n");
 }
 
+// Private key is imported lazily and reused to avoid repeated parsing overhead.
 async function getPrivateKey(alg: string) {
   if (!privateKeyPromise) {
     const keyPem = process.env.AGENT_PRIVATE_KEY_PEM;
@@ -55,6 +58,11 @@ async function getPrivateKey(alg: string) {
   return privateKeyPromise;
 }
 
+/**
+ * Builds outbound auth headers for:
+ * - platform `/api/v1/a2a/send`
+ * - MCP tool auth fields (embedded by MCP wrapper)
+ */
 export async function buildOutboundAuthHeaders(params: {
   method: string;
   path: string;

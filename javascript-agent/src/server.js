@@ -4,6 +4,7 @@ import { a2aHandler } from "./handlers/a2aHandler.js";
 import { healthHandler } from "./handlers/health.js";
 
 const app = express();
+// Keep raw JSON bytes available for inbound body-hash verification.
 app.use(express.raw({ type: "application/json" }));
 
 app.get("/health", healthHandler);

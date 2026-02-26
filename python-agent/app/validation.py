@@ -2,6 +2,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 _format_checker = FormatChecker()
 
+# Envelope schema platform forwards to external agents.
 A2A_FORWARD_SCHEMA = {
     "type": "object",
     "required": ["type", "task_id", "timestamp", "source", "intent", "payload", "context"],
@@ -36,6 +37,7 @@ A2A_FORWARD_SCHEMA = {
     "additionalProperties": True,
 }
 
+# Blueprint 03 input schema for ops.audit.
 OPS_AUDIT_INPUT_SCHEMA = {
     "type": "object",
     "required": ["objective", "source_task_id", "risk_focus", "severity_level"],
@@ -53,6 +55,7 @@ OPS_AUDIT_INPUT_SCHEMA = {
     "additionalProperties": True,
 }
 
+# Blueprint 03 output schema returned back to platform.
 OPS_AUDIT_OUTPUT_SCHEMA = {
     "type": "object",
     "required": ["findings", "severity", "recommendations"],
@@ -74,6 +77,7 @@ OPS_AUDIT_OUTPUT_SCHEMA = {
 
 
 def _validate(schema: dict, value: dict) -> tuple[bool, list[str]]:
+    """Run schema validation and return normalized error list."""
     validator = Draft202012Validator(schema, format_checker=_format_checker)
     errors = sorted(validator.iter_errors(value), key=lambda e: e.path)
     if not errors:

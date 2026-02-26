@@ -5,6 +5,13 @@ import { buildA2AFailure, buildA2ASuccess } from "../utils/a2aResponse.js";
 import { logError, logInfo } from "../utils/log.js";
 import { validateA2AForwardEnvelope } from "../validation/schemas.js";
 
+/**
+ * Platform-facing handler lifecycle:
+ * 1) parse + validate envelope
+ * 2) verify inbound platform auth
+ * 3) run intent logic
+ * 4) return normalized a2a_response
+ */
 export async function a2aHandler(req, res) {
   // Raw body is required because signature verification must use exact bytes.
   const bodyRaw = Buffer.isBuffer(req.body) ? req.body : Buffer.from([]);
@@ -35,6 +42,7 @@ export async function a2aHandler(req, res) {
     );
   }
   const task = envelopeValidation.value;
+  // Keep traceability even if caller omitted correlation_id.
   const correlationId =
     typeof task.context?.correlation_id === "string" && task.context.correlation_id.length > 0
       ? task.context.correlation_id
@@ -60,6 +68,7 @@ export async function a2aHandler(req, res) {
     const result = await runAgent(task);
     return res.json(buildA2ASuccess(task.task_id, result));
   } catch (err) {
+    // Unknown runtime failures become retryable EXECUTION_FAILED by default.
     const agentError =
       err instanceof AgentError
         ? err

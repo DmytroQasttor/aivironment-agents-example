@@ -13,6 +13,7 @@ _openai_client: OpenAI | None = None
 
 
 def _get_openai_client() -> OpenAI:
+    """Lazily initialize and reuse OpenAI client."""
     global _openai_client
     if _openai_client is None:
         api_key = require_env("OPENAI_API_KEY", "OPENAI_API_KEY is required")
@@ -21,10 +22,12 @@ def _get_openai_client() -> OpenAI:
 
 
 def _get_model() -> str:
+    """Resolve required model name for Responses API."""
     return require_env("OPENAI_MODEL", "OPENAI_MODEL is required")
 
 
 def _get_max_output_tokens() -> int:
+    """Read optional max output token ceiling (default 1200)."""
     raw = os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "1200")
     try:
         parsed = int(raw)
@@ -46,6 +49,7 @@ def _get_max_output_tokens() -> int:
 
 
 def _parse_json(text: str, error_message: str) -> dict[str, Any]:
+    """Strict JSON parser used for model/tool outputs."""
     try:
         return json.loads(text)
     except Exception:
@@ -72,6 +76,7 @@ def _is_uuid(value: str) -> bool:
 
 
 def _parse_possible_json(value: Any) -> Any:
+    """Best-effort parse for MCP text payloads that may contain serialized JSON."""
     if not isinstance(value, str):
         return value
     try:
@@ -81,6 +86,7 @@ def _parse_possible_json(value: Any) -> Any:
 
 
 def _unwrap_mcp_result(value: Any) -> Any:
+    """Unwrap Xano MCP `content[0].text` shape when present."""
     if not isinstance(value, dict):
         return value
     content = value.get("content")
@@ -93,6 +99,7 @@ def _unwrap_mcp_result(value: Any) -> Any:
 
 
 def _extract_connection_id(route_details_raw: Any) -> str | None:
+    """Compatibility extractor for route connection UUID variants."""
     route_details = _unwrap_mcp_result(route_details_raw)
     if not isinstance(route_details, dict):
         return None
@@ -116,6 +123,7 @@ def _extract_connection_id(route_details_raw: Any) -> str | None:
 
 
 def _extract_target_did(route_details_raw: Any) -> str | None:
+    """Extract target agent DID from top-level or nested route metadata."""
     route_details = _unwrap_mcp_result(route_details_raw)
     if not isinstance(route_details, dict):
         return None
@@ -139,6 +147,7 @@ def _extract_target_did(route_details_raw: Any) -> str | None:
 
 
 def _extract_intent_input_schema(route_details_raw: Any, intent: str) -> dict[str, Any] | None:
+    """Extract input schema for selected intent from route metadata."""
     route_details = _unwrap_mcp_result(route_details_raw)
     if not isinstance(route_details, dict):
         return None
@@ -185,6 +194,7 @@ def _extract_intent_input_schema(route_details_raw: Any, intent: str) -> dict[st
 def _normalize_payload_by_schema(
     payload: dict[str, Any], input_schema: dict[str, Any] | None
 ) -> dict[str, Any]:
+    """Order payload keys by schema properties first for predictable serialization."""
     if not isinstance(input_schema, dict):
         return payload
     properties = input_schema.get("properties")
@@ -202,6 +212,7 @@ def _normalize_payload_by_schema(
 
 
 def _ensure_valid_output(result: dict[str, Any]) -> dict[str, Any]:
+    """Final output schema guard before returning to platform."""
     ok_out, errors_out = validate_ops_audit_output(result)
     if not ok_out:
         raise AgentError(
@@ -214,6 +225,7 @@ def _ensure_valid_output(result: dict[str, Any]) -> dict[str, Any]:
 
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
+    # Tool set exposed to model; model decides when/if to delegate.
     {
         "type": "function",
         "name": "get_task_context",
@@ -282,6 +294,12 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
 
 
 def _run_tool_call(call: Any, request_task_id: str) -> Any:
+    """
+    Execute one model-requested tool call with guardrails:
+    - require route slug for delegate_task connection
+    - require payload object for delegation
+    - normalize missing context to {}
+    """
     args = _parse_json(
         call.arguments if isinstance(call.arguments, str) else "{}",
         "Model produced invalid tool arguments",
@@ -375,6 +393,13 @@ def _run_tool_call(call: Any, request_task_id: str) -> Any:
 
 
 def _decide_with_llm(task: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """
+    LLM orchestration loop:
+    - submit task prompt
+    - execute tool calls requested by model
+    - continue until model stops tool-calling
+    - require JSON final output
+    """
     model = _get_model()
     max_output_tokens = _get_max_output_tokens()
     client = _get_openai_client()
@@ -410,6 +435,7 @@ def _decide_with_llm(task: dict[str, Any], payload: dict[str, Any]) -> dict[str,
     )
 
     for _ in range(12):
+        # Hard loop cap prevents unbounded function-call chaining.
         output = response.output if isinstance(response.output, list) else []
         tool_calls = [item for item in output if getattr(item, "type", None) == "function_call"]
         if not tool_calls:
@@ -449,6 +475,7 @@ def _decide_with_llm(task: dict[str, Any], payload: dict[str, Any]) -> dict[str,
 
 
 def run_ops_audit(task: dict[str, Any]) -> dict[str, Any]:
+    """Blueprint 03 handler for `ops.audit`."""
     payload = task["payload"]
     ok, errors = validate_ops_audit_input(payload)
     if not ok:

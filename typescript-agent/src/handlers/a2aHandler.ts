@@ -5,6 +5,14 @@ import { verifyInboundAuth } from "../auth/inboundAuth";
 import { AgentError } from "../utils/agentError";
 import { logError, logInfo } from "../utils/log";
 
+/**
+ * Main platform-facing entrypoint.
+ * Flow:
+ * 1) parse/validate forwarded a2a envelope
+ * 2) verify inbound platform JWT
+ * 3) run intent handler
+ * 4) always return normalized a2a_response
+ */
 export async function a2aHandler(req: Request, res: Response) {
   const bodyRaw = Buffer.isBuffer(req.body) ? req.body : Buffer.from([]);
   if (bodyRaw.length === 0) {
@@ -50,6 +58,7 @@ export async function a2aHandler(req: Request, res: Response) {
     });
   }
   const task = envelopeValidation.value;
+  // Correlation id falls back to task_id to keep logs traceable even when context is partial.
   const correlationId =
     typeof task.context?.correlation_id === "string" && task.context.correlation_id.length > 0
       ? task.context.correlation_id
@@ -58,6 +67,7 @@ export async function a2aHandler(req: Request, res: Response) {
     typeof task.context?.depth === "number" ? task.context.depth : 0;
 
   try {
+    // Inbound auth is always platform JWT in current protocol version.
     await verifyInboundAuth({
       headers: req.headers,
       rawBody: bodyRaw,
@@ -73,6 +83,7 @@ export async function a2aHandler(req: Request, res: Response) {
     });
 
     const result = await runAgent(task);
+    // Success envelopes keep the same task_id to preserve lineage on platform side.
     return res.json({
       type: "a2a_response",
       task_id: task.task_id,
@@ -80,6 +91,7 @@ export async function a2aHandler(req: Request, res: Response) {
       result,
     });
   } catch (err: unknown) {
+    // All unknown failures are normalized into retryable execution errors.
     const agentError =
       err instanceof AgentError
         ? err

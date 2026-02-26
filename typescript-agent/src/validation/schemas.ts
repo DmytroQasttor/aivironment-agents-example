@@ -2,9 +2,11 @@ import Ajv from "ajv";
 import addFormats from "ajv-formats";
 import type { A2AForwardRequest, OpsCoordinatePayload, OpsCoordinateResult } from "../types/a2a";
 
+// Strict mode helps examples fail loudly when contracts drift.
 const ajv = new Ajv({ allErrors: true, strict: true });
 addFormats(ajv);
 
+// Envelope platform forwards to `/a2a`.
 const a2aForwardSchema = {
   type: "object",
   required: [
@@ -52,6 +54,7 @@ const a2aForwardSchema = {
   additionalProperties: true,
 } as const;
 
+// Blueprint 01 input contract for `ops.coordinate`.
 const opsCoordinateInputSchema = {
   type: "object",
   required: ["objective", "priority", "constraints", "metadata"],
@@ -91,6 +94,7 @@ const opsCoordinateInputSchema = {
   additionalProperties: true,
 } as const;
 
+// Blueprint 01 output contract for completed responses.
 const opsCoordinateOutputSchema = {
   type: "object",
   required: ["plan", "actions"],
@@ -102,6 +106,7 @@ const opsCoordinateOutputSchema = {
   additionalProperties: true,
 } as const;
 
+// Optional helper schema for intermediate LLM decision objects.
 const opsCoordinateLlmDecisionSchema = {
   type: "object",
   required: ["decision", "plan", "actions"],
@@ -134,6 +139,7 @@ const validateOpsCoordinateLlmDecisionInternal = ajv.compile(
   opsCoordinateLlmDecisionSchema,
 );
 
+// Validation wrappers return normalized error arrays for consistent API failures/logs.
 export function validateA2AForwardEnvelope(value: unknown): {
   ok: true;
   value: A2AForwardRequest;

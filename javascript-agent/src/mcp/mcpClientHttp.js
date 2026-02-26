@@ -5,6 +5,7 @@ let nextId = 1;
 let sessionId = null;
 let initialized = false;
 
+// MCP stream endpoint configured via environment.
 function getMcpUrl() {
   if (!process.env.MCP_HTTP_URL) {
     throw new AgentError("MCP_UNAVAILABLE", "MCP_HTTP_URL is not configured", true, 503);
@@ -12,6 +13,7 @@ function getMcpUrl() {
   return new URL(process.env.MCP_HTTP_URL);
 }
 
+// Extract JSON-RPC frames from SSE `data:` lines.
 function parseSseJsonResponses(text) {
   const responses = [];
   for (const line of text.split(/\r?\n/)) {
@@ -32,6 +34,7 @@ function parseSseJsonResponses(text) {
   return responses;
 }
 
+// Prefer exact id match, then fallback to first frame with result/error.
 function pickRpcResponse(responses, requestId) {
   for (const response of responses) {
     if (response.id === requestId) {
@@ -68,6 +71,7 @@ function canonicalJson(value) {
   return JSON.stringify(sortKeysDeep(value));
 }
 
+// Maps tool names to logical platform auth canonical method/path/body.
 function resolveToolAuthSpec(params) {
   if (!isRecord(params)) {
     return null;
@@ -124,6 +128,7 @@ function resolveToolAuthSpec(params) {
   return null;
 }
 
+// Inject auth headers expected by MCP tool wrappers on backend side.
 async function withToolAuthArguments(params) {
   if (!isRecord(params) || !isRecord(params.arguments)) {
     return params;
@@ -163,6 +168,7 @@ async function withToolAuthArguments(params) {
   };
 }
 
+// Sends one JSON-RPC call over streaming MCP transport.
 async function postRpc(method, params, targetAgentDid) {
   const mcpUrl = getMcpUrl();
   const requestId = nextId++;
@@ -227,6 +233,7 @@ async function postRpc(method, params, targetAgentDid) {
   return rpcResponse.result;
 }
 
+// One-time initialize handshake for MCP session.
 async function ensureInitialized() {
   if (initialized) {
     return;
@@ -246,6 +253,7 @@ async function ensureInitialized() {
   initialized = true;
 }
 
+// Generic MCP tool invoker used by intent handlers.
 export async function mcpCallTool(name, args, targetAgentDid) {
   await ensureInitialized();
   const result = await postRpc("tools/call", { name, arguments: args }, targetAgentDid);
@@ -255,6 +263,7 @@ export async function mcpCallTool(name, args, targetAgentDid) {
   return result;
 }
 
+// Convenience wrappers for readability in examples/docs.
 export async function mcpGetTaskContext(taskId, correlationId) {
   return mcpCallTool("get_task_context", {
     task_id: taskId,

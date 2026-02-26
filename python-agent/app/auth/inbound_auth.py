@@ -12,6 +12,7 @@ _jwks_client: PyJWKClient | None = None
 
 
 def _get_jwks_client() -> PyJWKClient:
+    """Lazily create JWKS client for platform JWT verification."""
     global _jwks_client
     if _jwks_client is None:
         jwks_url = require_env(
@@ -23,6 +24,7 @@ def _get_jwks_client() -> PyJWKClient:
 
 
 def _sort_keys_deep(value):
+    """Recursively sort object keys while preserving list order."""
     if isinstance(value, list):
         return [_sort_keys_deep(item) for item in value]
     if not isinstance(value, dict):
@@ -31,6 +33,7 @@ def _sort_keys_deep(value):
 
 
 def _canonical_body_hash(raw_body: bytes) -> str:
+    """Compute canonical body hash aligned with platform JWT body_hash."""
     try:
         parsed = json.loads(raw_body.decode("utf-8"))
         canonical = json.dumps(
@@ -44,6 +47,7 @@ def _canonical_body_hash(raw_body: bytes) -> str:
 def verify_inbound_auth(
     headers: dict, raw_body: bytes, task_id: str, correlation_id: str
 ) -> None:
+    """Verify platform->agent JWT and enforce claim parity checks."""
     auth = headers.get("authorization")
     if not isinstance(auth, str) or not auth.startswith("Bearer "):
         raise AgentError("AUTH_INVALID", "Missing platform bearer token", False, 401)

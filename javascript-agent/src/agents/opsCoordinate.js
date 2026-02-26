@@ -12,6 +12,7 @@ import {
   validateOpsCoordinateOutput,
 } from "../validation/schemas.js";
 
+// Final response guard: never return output that violates declared contract.
 function ensureValidOutput(result) {
   const outputValidation = validateOpsCoordinateOutput(result);
   if (!outputValidation.ok) {
@@ -25,6 +26,7 @@ function ensureValidOutput(result) {
   return outputValidation.value;
 }
 
+// Tool contract presented to the model in Responses API tool-calling mode.
 const toolDefinitions = [
   {
     type: "function",
@@ -91,6 +93,7 @@ const toolDefinitions = [
   },
 ];
 
+// Model function arguments arrive as JSON strings.
 function parseJsonArgs(rawArgs) {
   if (!rawArgs || typeof rawArgs !== "string") {
     return {};
@@ -112,6 +115,7 @@ function isUuid(value) {
   );
 }
 
+// MCP stream may wrap JSON payloads into content[0].text strings.
 function parsePossibleJson(value) {
   if (typeof value !== "string") {
     return value;
@@ -134,6 +138,7 @@ function unwrapMcpResult(result) {
   return parsePossibleJson(first.text);
 }
 
+// Compatibility helper for varied route detail payloads.
 function extractConnectionId(routeDetailsRaw) {
   const routeDetails = unwrapMcpResult(routeDetailsRaw);
   if (!isPlainObject(routeDetails)) {
@@ -176,6 +181,7 @@ function extractConnectionId(routeDetailsRaw) {
   return null;
 }
 
+// Reads target DID from top-level or nested route payloads.
 function extractTargetDid(routeDetailsRaw) {
   const routeDetails = unwrapMcpResult(routeDetailsRaw);
   if (!isPlainObject(routeDetails)) {
@@ -194,6 +200,7 @@ function extractTargetDid(routeDetailsRaw) {
   return null;
 }
 
+// Reads selected intent input schema (if exposed by MCP route metadata).
 function extractIntentInputSchema(routeDetailsRaw, intent) {
   const routeDetails = unwrapMcpResult(routeDetailsRaw);
   if (!isPlainObject(routeDetails)) {
@@ -246,6 +253,7 @@ function extractIntentInputSchema(routeDetailsRaw, intent) {
   return null;
 }
 
+// Reorders payload keys to schema order first, then preserves additional keys.
 function normalizePayloadBySchema(payload, inputSchema) {
   if (!isPlainObject(inputSchema) || !isPlainObject(inputSchema.properties)) {
     return payload;
@@ -265,6 +273,7 @@ function normalizePayloadBySchema(payload, inputSchema) {
   return normalized;
 }
 
+// Policy boundary translating model tool calls into MCP calls with guardrails.
 async function runToolCall(call, requestTaskId) {
   const args = parseJsonArgs(call.arguments);
   switch (call.name) {
@@ -321,6 +330,7 @@ async function runToolCall(call, requestTaskId) {
         );
       }
       let routeDetails = null;
+      // Runtime requires route slug, not connection UUID.
       if (isUuid(connection)) {
         return {
           error: {
@@ -358,6 +368,7 @@ async function runToolCall(call, requestTaskId) {
           target_agent: targetAgentDid,
           intent: args.intent,
           payload: args.payload,
+          // Keep empty object parity for downstream canonical hashing.
           context: isPlainObject(args.context) ? args.context : {},
         },
         targetAgentDid,
@@ -368,6 +379,13 @@ async function runToolCall(call, requestTaskId) {
   }
 }
 
+/**
+ * LLM orchestration loop:
+ * - submits initial task context
+ * - executes requested tools
+ * - feeds tool outputs back until no function calls remain
+ * - enforces JSON-only final response
+ */
 async function decideWithLlm({ request, payload }) {
   const model = getOpenAIModel();
   const maxOutputTokens = getOpenAIMaxOutputTokens();
@@ -400,6 +418,7 @@ async function decideWithLlm({ request, payload }) {
   });
 
   for (let i = 0; i < 12; i += 1) {
+    // Hard cap prevents runaway loops.
     const toolCalls = (response.output ?? []).filter(
       (item) => item.type === "function_call",
     );

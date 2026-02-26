@@ -15,6 +15,7 @@ _initialized = False
 
 
 def _parse_sse_json_frames(raw_text: str) -> list[dict[str, Any]]:
+    """Parse JSON-RPC SSE `data:` frames emitted by MCP stream endpoint."""
     responses: list[dict[str, Any]] = []
     for line in raw_text.splitlines():
         trimmed = line.strip()
@@ -33,6 +34,7 @@ def _parse_sse_json_frames(raw_text: str) -> list[dict[str, Any]]:
 
 
 def _pick_rpc_response(responses: list[dict[str, Any]], request_id: int) -> dict[str, Any] | None:
+    """Select response by id when available, else first result/error frame."""
     for response in responses:
         if response.get("id") == request_id:
             return response
@@ -43,6 +45,7 @@ def _pick_rpc_response(responses: list[dict[str, Any]], request_id: int) -> dict
 
 
 def _resolve_tool_auth_spec(params: dict[str, Any]) -> dict[str, Any] | None:
+    """Map tool call to logical method/path/body used for advanced auth signing."""
     name = params.get("name")
     tool_args = params.get("arguments")
     if not isinstance(name, str) or not isinstance(tool_args, dict):
@@ -96,6 +99,7 @@ def _resolve_tool_auth_spec(params: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _with_tool_auth_arguments(params: dict[str, Any]) -> dict[str, Any]:
+    """Inject auth headers expected by backend MCP tool wrappers."""
     if not isinstance(params.get("arguments"), dict):
         return params
     spec = _resolve_tool_auth_spec(params)
@@ -144,6 +148,7 @@ def _with_tool_auth_arguments(params: dict[str, Any]) -> dict[str, Any]:
 def _post_rpc(
     method: str, params: dict[str, Any], target_agent_did: str | None = None
 ) -> Any:
+    """Send a single JSON-RPC request over MCP stream transport."""
     global _session_id
 
     mcp_url = require_env("MCP_HTTP_URL", "MCP_HTTP_URL is required")
@@ -212,6 +217,7 @@ def _post_rpc(
 
 
 def _ensure_initialized() -> None:
+    """Initialize MCP session once per process."""
     global _initialized
     if _initialized:
         return
@@ -235,6 +241,7 @@ def _ensure_initialized() -> None:
 def mcp_call_tool(
     name: str, args: dict[str, Any], target_agent_did: str | None = None
 ) -> Any:
+    """Generic tool invoker used by intent handlers."""
     _ensure_initialized()
     result = _post_rpc(
         "tools/call", {"name": name, "arguments": args}, target_agent_did
@@ -266,6 +273,7 @@ def mcp_delegate_task(
     payload: dict[str, Any],
     context: dict[str, Any] | None = None,
 ) -> Any:
+    """Helper for delegation tool with target DID forwarded for advanced auth."""
     return mcp_call_tool(
         "delegate_task",
         {
