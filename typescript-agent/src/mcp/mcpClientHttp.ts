@@ -70,6 +70,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function hasKeys(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && Object.keys(value).length > 0;
+}
+
 function resolveToolAuthSpec(params: unknown): ToolAuthSpec | null {
   if (!isRecord(params)) {
     return null;
@@ -114,7 +118,7 @@ function resolveToolAuthSpec(params: unknown): ToolAuthSpec | null {
       target_agent: targetAgent,
       intent: toolArgs.intent,
       payload: toolArgs.payload,
-      ...(toolArgs.context !== null && typeof toolArgs.context !== "undefined"
+      ...(hasKeys(toolArgs.context)
         ? { context: toolArgs.context }
         : {}),
       connection: toolArgs.connection,

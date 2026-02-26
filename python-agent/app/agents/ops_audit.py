@@ -56,6 +56,10 @@ def _is_plain_object(value: Any) -> bool:
     return isinstance(value, dict)
 
 
+def _has_keys(value: Any) -> bool:
+    return isinstance(value, dict) and len(value.keys()) > 0
+
+
 def _is_uuid(value: str) -> bool:
     import re
 
@@ -304,7 +308,7 @@ def _run_tool_call(call: Any, request_task_id: str) -> Any:
         "intent": args.get("intent"),
         "payload": args.get("payload"),
     }
-    if isinstance(args.get("context"), dict):
+    if _has_keys(args.get("context")):
         delegate_args["context"] = args["context"]
     return mcp_call_tool("delegate_task", delegate_args, target_agent_did)
 
