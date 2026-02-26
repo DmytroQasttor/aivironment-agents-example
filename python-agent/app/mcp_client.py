@@ -73,7 +73,7 @@ def _resolve_tool_auth_spec(params: dict[str, Any]) -> dict[str, Any] | None:
         if not isinstance(target_agent, str) or not target_agent:
             return None
         context_value = tool_args.get("context")
-        include_context = isinstance(context_value, dict) and len(context_value.keys()) > 0
+        include_context = isinstance(context_value, dict)
         canonical_body: dict[str, Any] = {
             "target_agent": target_agent,
             "intent": tool_args.get("intent"),
