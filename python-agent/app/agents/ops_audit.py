@@ -141,6 +141,69 @@ def _extract_target_did(route_details_raw: Any) -> str | None:
     return None
 
 
+def _extract_intent_input_schema(route_details_raw: Any, intent: str) -> dict[str, Any] | None:
+    route_details = _unwrap_mcp_result(route_details_raw)
+    if not isinstance(route_details, dict):
+        return None
+
+    schema_candidates: list[Any] = []
+    for candidate in (
+        route_details.get("input_schema"),
+        route_details.get("intent_input_schema"),
+        (
+            route_details.get("schema", {}).get("input_schema")
+            if isinstance(route_details.get("schema"), dict)
+            else None
+        ),
+    ):
+        if isinstance(candidate, dict):
+            schema_candidates.append(candidate)
+
+    intents_containers: list[Any] = []
+    if isinstance(route_details.get("intents"), list):
+        intents_containers.append(route_details.get("intents"))
+    payload = route_details.get("payload")
+    if isinstance(payload, dict) and isinstance(payload.get("intents"), list):
+        intents_containers.append(payload.get("intents"))
+
+    for container in intents_containers:
+        if not isinstance(container, list):
+            continue
+        for item in container:
+            if not isinstance(item, dict):
+                continue
+            if item.get("intent") == intent or item.get("name") == intent:
+                if isinstance(item.get("input_schema"), dict):
+                    schema_candidates.append(item.get("input_schema"))
+                schema = item.get("schema")
+                if isinstance(schema, dict) and isinstance(schema.get("input_schema"), dict):
+                    schema_candidates.append(schema.get("input_schema"))
+
+    for candidate in schema_candidates:
+        if isinstance(candidate, dict):
+            return candidate
+    return None
+
+
+def _normalize_payload_by_schema(
+    payload: dict[str, Any], input_schema: dict[str, Any] | None
+) -> dict[str, Any]:
+    if not isinstance(input_schema, dict):
+        return payload
+    properties = input_schema.get("properties")
+    if not isinstance(properties, dict):
+        return payload
+
+    normalized: dict[str, Any] = {}
+    for key in properties.keys():
+        if key in payload:
+            normalized[key] = payload[key]
+    for key, value in payload.items():
+        if key not in normalized:
+            normalized[key] = value
+    return normalized
+
+
 def _ensure_valid_output(result: dict[str, Any]) -> dict[str, Any]:
     ok_out, errors_out = validate_ops_audit_output(result)
     if not ok_out:

@@ -194,6 +194,80 @@ function extractTargetDid(routeDetailsRaw: unknown): string | null {
   return null;
 }
 
+function extractIntentInputSchema(routeDetailsRaw: unknown, intent: string): Record<string, unknown> | null {
+  const routeDetails = unwrapMcpResult(routeDetailsRaw);
+  if (!isPlainObject(routeDetails)) {
+    return null;
+  }
+
+  const schemaCandidates: unknown[] = [];
+  if (isPlainObject(routeDetails.input_schema)) {
+    schemaCandidates.push(routeDetails.input_schema);
+  }
+  if (isPlainObject(routeDetails.intent_input_schema)) {
+    schemaCandidates.push(routeDetails.intent_input_schema);
+  }
+  if (isPlainObject(routeDetails.schema) && isPlainObject(routeDetails.schema.input_schema)) {
+    schemaCandidates.push(routeDetails.schema.input_schema);
+  }
+
+  const intentsContainers: unknown[] = [];
+  if (Array.isArray(routeDetails.intents)) {
+    intentsContainers.push(routeDetails.intents);
+  }
+  if (isPlainObject(routeDetails.payload) && Array.isArray(routeDetails.payload.intents)) {
+    intentsContainers.push(routeDetails.payload.intents);
+  }
+  for (const container of intentsContainers) {
+    if (!Array.isArray(container)) {
+      continue;
+    }
+    const match = container.find(
+      (item) =>
+        isPlainObject(item) &&
+        ((typeof item.intent === "string" && item.intent === intent) ||
+          (typeof item.name === "string" && item.name === intent)),
+    );
+    if (isPlainObject(match)) {
+      if (isPlainObject(match.input_schema)) {
+        schemaCandidates.push(match.input_schema);
+      }
+      if (isPlainObject(match.schema) && isPlainObject(match.schema.input_schema)) {
+        schemaCandidates.push(match.schema.input_schema);
+      }
+    }
+  }
+
+  for (const candidate of schemaCandidates) {
+    if (isPlainObject(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function normalizePayloadBySchema(
+  payload: Record<string, unknown>,
+  inputSchema: Record<string, unknown> | null,
+) {
+  if (!inputSchema || !isPlainObject(inputSchema.properties)) {
+    return payload;
+  }
+  const preferred = Object.keys(inputSchema.properties);
+  const normalized: Record<string, unknown> = {};
+  for (const key of preferred) {
+    if (key in payload) {
+      normalized[key] = payload[key];
+    }
+  }
+  for (const [key, value] of Object.entries(payload)) {
+    if (!(key in normalized)) {
+      normalized[key] = value;
+    }
+  }
+  return normalized;
+}
+
 async function runToolCall(call: any, requestTaskId: string) {
   const args = parseJsonArgs(call.arguments);
   switch (call.name) {
