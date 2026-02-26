@@ -28,6 +28,30 @@ function getJwksResolver() {
   return jwksResolver;
 }
 
+function sortKeysDeep(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => sortKeysDeep(item));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+    sorted[key] = sortKeysDeep((value as Record<string, unknown>)[key]);
+  }
+  return sorted;
+}
+
+function canonicalBodyHash(rawBody: Buffer) {
+  try {
+    const parsed = JSON.parse(rawBody.toString("utf8")) as unknown;
+    const canonical = JSON.stringify(sortKeysDeep(parsed));
+    return crypto.createHash("sha256").update(canonical, "utf8").digest("hex");
+  } catch {
+    return crypto.createHash("sha256").update(rawBody).digest("hex");
+  }
+}
+
 export async function verifyInboundAuth(params: {
   headers: IncomingHttpHeaders;
   rawBody: Buffer;
@@ -48,10 +72,7 @@ export async function verifyInboundAuth(params: {
   }
   const method = "POST";
   const path = "/a2a";
-  const bodyHash = crypto
-    .createHash("sha256")
-    .update(params.rawBody)
-    .digest("hex");
+  const bodyHash = canonicalBodyHash(params.rawBody);
 
   if (token) {
     let payload: Awaited<ReturnType<typeof jwtVerify>>["payload"];

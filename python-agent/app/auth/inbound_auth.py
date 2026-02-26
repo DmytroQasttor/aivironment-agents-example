@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 
 import jwt
@@ -21,6 +22,25 @@ def _get_jwks_client() -> PyJWKClient:
     return _jwks_client
 
 
+def _sort_keys_deep(value):
+    if isinstance(value, list):
+        return [_sort_keys_deep(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    return {key: _sort_keys_deep(value[key]) for key in sorted(value.keys())}
+
+
+def _canonical_body_hash(raw_body: bytes) -> str:
+    try:
+        parsed = json.loads(raw_body.decode("utf-8"))
+        canonical = json.dumps(
+            _sort_keys_deep(parsed), separators=(",", ":"), ensure_ascii=False
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    except Exception:
+        return hashlib.sha256(raw_body).hexdigest()
+
+
 def verify_inbound_auth(
     headers: dict, raw_body: bytes, task_id: str, correlation_id: str
 ) -> None:
@@ -34,7 +54,7 @@ def verify_inbound_auth(
     )
     jwk_client = _get_jwks_client()
     issuer = os.getenv("PLATFORM_JWT_ISSUER", "federated-agent-platform")
-    body_hash = hashlib.sha256(raw_body).hexdigest()
+    body_hash = _canonical_body_hash(raw_body)
 
     try:
         allowed_alg = os.getenv("PLATFORM_JWT_ALGORITHM", "RS256")

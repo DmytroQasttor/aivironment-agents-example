@@ -16,10 +16,34 @@ function getJwksResolver() {
   return jwksResolver;
 }
 
+function sortKeysDeep(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => sortKeysDeep(item));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const sorted = {};
+  for (const key of Object.keys(value).sort()) {
+    sorted[key] = sortKeysDeep(value[key]);
+  }
+  return sorted;
+}
+
+function canonicalBodyHash(rawBody) {
+  try {
+    const parsed = JSON.parse(rawBody.toString("utf8"));
+    const canonical = JSON.stringify(sortKeysDeep(parsed));
+    return crypto.createHash("sha256").update(canonical, "utf8").digest("hex");
+  } catch {
+    return crypto.createHash("sha256").update(rawBody).digest("hex");
+  }
+}
+
 export async function verifyInboundAuth({ headers, rawBody, taskId, correlationId }) {
   const agentDid = getAgentDid();
   const auth = headers.authorization;
-  const bodyHash = crypto.createHash("sha256").update(rawBody).digest("hex");
+  const bodyHash = canonicalBodyHash(rawBody);
   if (auth && auth.startsWith("Bearer ")) {
     const token = auth.slice("Bearer ".length).trim();
 
