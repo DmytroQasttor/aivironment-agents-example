@@ -84,7 +84,12 @@ def _resolve_tool_auth_spec(params: dict[str, Any]) -> dict[str, Any] | None:
         return {
             "method": "POST",
             "path": "/api/v1/a2a/send",
-            "body": json.dumps(canonical_body),
+            "body": json.dumps(
+                canonical_body,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ),
             "target_agent_did": target_agent,
         }
     return None

@@ -54,6 +54,24 @@ function hasKeys(value) {
   return isRecord(value) && Object.keys(value).length > 0;
 }
 
+function sortKeysDeep(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => sortKeysDeep(item));
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+  const sorted = {};
+  for (const key of Object.keys(value).sort()) {
+    sorted[key] = sortKeysDeep(value[key]);
+  }
+  return sorted;
+}
+
+function canonicalJson(value) {
+  return JSON.stringify(sortKeysDeep(value));
+}
+
 function resolveToolAuthSpec(params) {
   if (!isRecord(params)) {
     return null;
@@ -103,7 +121,7 @@ function resolveToolAuthSpec(params) {
     return {
       method: "POST",
       path: "/api/v1/a2a/send",
-      body: JSON.stringify(canonicalBody),
+      body: canonicalJson(canonicalBody),
       targetAgentDid: toolArgs.target_agent,
     };
   }

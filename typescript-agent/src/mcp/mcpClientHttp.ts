@@ -74,6 +74,24 @@ function hasKeys(value: unknown): value is Record<string, unknown> {
   return isRecord(value) && Object.keys(value).length > 0;
 }
 
+function sortKeysDeep(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => sortKeysDeep(item));
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(value).sort()) {
+    sorted[key] = sortKeysDeep(value[key]);
+  }
+  return sorted;
+}
+
+function canonicalJson(value: unknown) {
+  return JSON.stringify(sortKeysDeep(value));
+}
+
 function resolveToolAuthSpec(params: unknown): ToolAuthSpec | null {
   if (!isRecord(params)) {
     return null;
@@ -126,7 +144,7 @@ function resolveToolAuthSpec(params: unknown): ToolAuthSpec | null {
     return {
       method: "POST",
       path: "/api/v1/a2a/send",
-      body: JSON.stringify(canonicalBody),
+      body: canonicalJson(canonicalBody),
       targetAgentDid: targetAgent,
     };
   }
