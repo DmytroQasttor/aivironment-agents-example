@@ -367,9 +367,8 @@ def _run_tool_call(call: Any, request_task_id: str) -> Any:
         "target_agent": target_agent_did,
         "intent": args.get("intent"),
         "payload": args.get("payload"),
+        "context": args.get("context") if isinstance(args.get("context"), dict) else {},
     }
-    if isinstance(args.get("context"), dict):
-        delegate_args["context"] = args["context"]
     return mcp_call_tool("delegate_task", delegate_args, target_agent_did)
 
 

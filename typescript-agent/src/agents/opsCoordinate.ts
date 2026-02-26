@@ -353,7 +353,7 @@ async function runToolCall(call: any, requestTaskId: string) {
           target_agent: targetAgentDid,
           intent: args.intent,
           payload: args.payload,
-          ...(isPlainObject(args.context) ? { context: args.context } : {}),
+          context: isPlainObject(args.context) ? args.context : {},
         },
         targetAgentDid,
       );
