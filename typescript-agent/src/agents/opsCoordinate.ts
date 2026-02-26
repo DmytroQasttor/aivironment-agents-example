@@ -320,15 +320,19 @@ async function runToolCall(call: any, requestTaskId: string) {
         );
       }
       let routeDetails: unknown = null;
-      let resolvedConnection = connection;
-      if (!isUuid(connection)) {
-        routeDetails = await mcpCallTool("get_route_details", {
-          task_id: requestTaskId,
-          slug: connection,
-        });
-        resolvedConnection = extractConnectionId(routeDetails) ?? connection;
-        targetAgentDid = extractTargetDid(routeDetails) ?? targetAgentDid;
+      if (isUuid(connection)) {
+        return {
+          error: {
+            code: "TOOL_ARGUMENTS_INVALID",
+            message: "delegate_task requires route slug in connection field, not UUID",
+          },
+        };
       }
+      routeDetails = await mcpCallTool("get_route_details", {
+        task_id: requestTaskId,
+        slug: connection,
+      });
+      targetAgentDid = extractTargetDid(routeDetails) ?? targetAgentDid;
       if (!isPlainObject(args.payload)) {
         if (!routeDetails && !isUuid(connection)) {
           routeDetails = await mcpCallTool("get_route_details", {
@@ -349,7 +353,7 @@ async function runToolCall(call: any, requestTaskId: string) {
         "delegate_task",
         {
           task_id: requestTaskId,
-          connection: resolvedConnection,
+          connection,
           target_agent: targetAgentDid,
           intent: args.intent,
           payload: args.payload,

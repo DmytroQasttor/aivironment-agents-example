@@ -334,17 +334,19 @@ def _run_tool_call(call: Any, request_task_id: str) -> Any:
             502,
         )
     route_details: Any = None
-    resolved_connection = connection
-    if not _is_uuid(connection):
-        route_details = mcp_call_tool(
-            "get_route_details", {"task_id": request_task_id, "slug": connection}
-        )
-        extracted = _extract_connection_id(route_details)
-        if isinstance(extracted, str):
-            resolved_connection = extracted
-        resolved_target = _extract_target_did(route_details)
-        if isinstance(resolved_target, str):
-            target_agent_did = resolved_target
+    if _is_uuid(connection):
+        return {
+            "error": {
+                "code": "TOOL_ARGUMENTS_INVALID",
+                "message": "delegate_task requires route slug in connection field, not UUID",
+            }
+        }
+    route_details = mcp_call_tool(
+        "get_route_details", {"task_id": request_task_id, "slug": connection}
+    )
+    resolved_target = _extract_target_did(route_details)
+    if isinstance(resolved_target, str):
+        target_agent_did = resolved_target
     if not _is_plain_object(args.get("payload")):
         if route_details is None and not _is_uuid(connection):
             route_details = mcp_call_tool(
@@ -363,7 +365,7 @@ def _run_tool_call(call: Any, request_task_id: str) -> Any:
 
     delegate_args: dict[str, Any] = {
         "task_id": request_task_id,
-        "connection": resolved_connection,
+        "connection": connection,
         "target_agent": target_agent_did,
         "intent": args.get("intent"),
         "payload": args.get("payload"),
