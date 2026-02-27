@@ -37,6 +37,16 @@ This agent uses the same production-style lifecycle expected from external integ
 
 This keeps strict I/O contracts for platform testing while still allowing LLM-driven decisions.
 
+## Integration-kit (for FE/Docs instructions)
+
+If you only need endpoint + MCP connection guidance (without business validation), use:
+
+- `app/integration_kit/types.py` - base `a2a_forward` shape check helper
+- `app/integration_kit/connection_endpoint.py` - minimal `/a2a` endpoint factory
+- `app/integration_kit/health_endpoint.py` - minimal `/health` payload builder
+- `app/integration_kit/mcp_toolkit.py` - thin wrappers for MCP tools and required inputs
+- `app/integration_kit/__init__.py` - package exports
+
 ## Local setup
 
 ```bash

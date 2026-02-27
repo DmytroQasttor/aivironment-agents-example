@@ -67,6 +67,18 @@ This keeps behavior deterministic for platform E2E tests while still allowing LL
 - `src/mcp/mcpClientHttp.ts` - MCP JSON-RPC transport + tool wrappers
 - `src/utils/signature.ts` - timing-safe HMAC verification
 
+### Integration-kit (for FE/Docs instructions)
+
+If you need only platform connection endpoint + health endpoint + MCP tool connection logic, use:
+
+- `src/integration-kit/types.ts` - minimal `a2a_forward` and `a2a_response` types
+- `src/integration-kit/connectionEndpoint.ts` - minimal `/a2a` endpoint factory (no business schema validation)
+- `src/integration-kit/healthEndpoint.ts` - minimal `/health` payload builder
+- `src/integration-kit/mcpToolkit.ts` - thin wrappers for platform MCP tools and their required inputs
+- `src/integration-kit/index.ts` - barrel exports
+
+This module is intentionally narrow and can be used as the base code in frontend instruction pages.
+
 ## Prerequisites
 
 - Node.js 18+

@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from app.agent_runner import run_agent
 from app.auth.inbound_auth import verify_inbound_auth
 from app.errors import AgentError
+from app.integration_kit.health_endpoint import build_health_payload
 from app.responses import build_a2a_failure, build_a2a_success
 from app.utils.log import log_error, log_info
 from app.validation import validate_a2a_forward_envelope
@@ -16,11 +17,10 @@ from app.validation import validate_a2a_forward_envelope
 async def health_handler() -> JSONResponse:
     """Lightweight probe endpoint for deploy checks and monitoring."""
     return JSONResponse(
-        {
-            "status": "ok",
-            "agent": "compliance-risk-auditor",
-            "auth_mode": os.getenv("AGENT_AUTH_MODE", "simple"),
-        }
+        build_health_payload(
+            agent_name="compliance-risk-auditor",
+            auth_mode=os.getenv("AGENT_AUTH_MODE", "simple"),
+        )
     )
 
 

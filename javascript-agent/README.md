@@ -36,6 +36,16 @@ This agent follows the same production-style lifecycle expected from external in
 
 This gives deterministic platform contracts while preserving LLM-driven runtime decisions.
 
+## Integration-kit (for FE/Docs instructions)
+
+If you only need endpoint + MCP connection guidance (without business validation), use:
+
+- `src/integration-kit/types.js` - base `a2a_forward` shape check helper
+- `src/integration-kit/connectionEndpoint.js` - minimal `/a2a` endpoint factory
+- `src/integration-kit/healthEndpoint.js` - minimal `/health` payload builder
+- `src/integration-kit/mcpToolkit.js` - thin wrappers for MCP tools and required inputs
+- `src/integration-kit/index.js` - barrel exports
+
 ## Run
 
 ```bash
