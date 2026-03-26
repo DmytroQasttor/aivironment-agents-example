@@ -6,6 +6,7 @@ from openai import OpenAI
 
 from app.config import require_env
 from app.errors import AgentError
+from app.integration_kit.mcp_toolkit import PLATFORM_MCP_TOOLS
 from app.mcp_client import mcp_call_tool
 from app.validation import validate_ops_audit_input, validate_ops_audit_output
 
@@ -224,12 +225,66 @@ def _ensure_valid_output(result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+SUPPORTED_TOOL_NAMES = set(PLATFORM_MCP_TOOLS.values())
+TASK_SCOPED_TOOLS = {
+    "aiv_get_task_lineage",
+    "aiv_list_routes",
+    "aiv_get_route_details",
+    "aiv_accept_task",
+    "aiv_complete_task",
+    "aiv_get_task_details",
+    "aiv_delegate_task",
+}
+
+GENERIC_TOOL_DESCRIPTIONS: dict[str, str] = {
+    "aiv_identify": "Return current agent identity and governance registration details.",
+    "aiv_check_action": "Check whether a planned action is allowed under governance rules before executing it.",
+    "aiv_log_activity": "Write an auditable activity event for the current agent or task.",
+    "aiv_heartbeat": "Send a heartbeat update so the platform knows this agent is active.",
+    "aiv_compliance_rules": "Fetch compliance and governance rules relevant to this agent.",
+    "aiv_poll_tasks": "Poll for inbound tasks that this agent can claim and work on.",
+    "aiv_complete_task": "Complete the current task with result or error details when work is finished.",
+    "aiv_discover_agents": "Search for available agents and their metadata.",
+    "aiv_platform_stats": "Retrieve governance and platform-level status metrics.",
+    "aiv_send_message": "Send a direct message to another agent using target_agent, intent, payload, and optional context.",
+    "aiv_get_rate_limit_status": "Check current rate limit usage and remaining allowance for this agent.",
+    "aiv_get_my_connections": "List this agent's active and pending connections.",
+    "aiv_request_connection": "Request a new connection to another agent or capability.",
+    "aiv_rotate_secret": "Rotate the current agent secret when operating in simple auth mode.",
+    "aiv_get_task_details": "Fetch detailed state and metadata for the current task.",
+    "aiv_get_my_metrics": "Get metrics and performance data for the current agent.",
+    "aiv_update_my_metadata": "Update this agent's public metadata and descriptive fields.",
+    "aiv_test_connection": "Test whether an agent connection is healthy and usable.",
+    "aiv_get_compliance_evidence": "Retrieve evidence records for compliance checks or audit trails.",
+    "aiv_store_data": "Store agent data or state in governance-managed storage.",
+    "aiv_retrieve_data": "Retrieve previously stored governance-managed data by key or namespace.",
+    "aiv_emergency_shutdown": "Trigger an emergency shutdown flow for this agent.",
+    "aiv_get_my_activity": "List recent activity and audit events for the current agent.",
+    "aiv_accept_task": "Claim an inbound task so this agent becomes the active worker.",
+}
+
+
+def _create_generic_tool_definition(name: str) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "name": name,
+        "description": GENERIC_TOOL_DESCRIPTIONS.get(
+            name, f"Call governance MCP tool {name}."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": True,
+        },
+    }
+
+
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     # Tool set exposed to model; model decides when/if to delegate.
     {
         "type": "function",
-        "name": "get_task_context",
-        "description": "Fetch context and lineage details for the current task id.",
+        "name": "aiv_get_task_lineage",
+        "description": "Fetch lineage details for the current task id before delegation.",
         "parameters": {
             "type": "object",
             "required": [],
@@ -241,7 +296,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
-        "name": "list_reachable_routes",
+        "name": "aiv_list_routes",
         "description": "List active routes this agent can use for delegation from current task.",
         "parameters": {
             "type": "object",
@@ -255,7 +310,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
-        "name": "get_route_details",
+        "name": "aiv_get_route_details",
         "description": "Get details and schema expectations for a selected route.",
         "parameters": {
             "type": "object",
@@ -268,7 +323,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
-        "name": "delegate_task",
+        "name": "aiv_delegate_task",
         "description": (
             "Delegate to a target agent. Use only with discovered active routes and correct lineage context."
         ),
@@ -290,13 +345,32 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "additionalProperties": False,
         },
     },
+    *[
+        _create_generic_tool_definition(name)
+        for name in PLATFORM_MCP_TOOLS.values()
+        if name
+        not in {
+            "aiv_get_task_lineage",
+            "aiv_list_routes",
+            "aiv_get_route_details",
+            "aiv_delegate_task",
+        }
+    ],
 ]
+
+
+def _extract_generic_target_did(args: dict[str, Any]) -> str | None:
+    for key in ("target_agent", "target_agent_did"):
+        candidate = args.get(key)
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return None
 
 
 def _run_tool_call(call: Any, request_task_id: str) -> Any:
     """
     Execute one model-requested tool call with guardrails:
-    - require route slug for delegate_task connection
+    - require route slug for aiv_delegate_task connection
     - require payload object for delegation
     - normalize missing context to {}
     """
@@ -304,12 +378,7 @@ def _run_tool_call(call: Any, request_task_id: str) -> Any:
         call.arguments if isinstance(call.arguments, str) else "{}",
         "Model produced invalid tool arguments",
     )
-    if call.name not in {
-        "get_task_context",
-        "list_reachable_routes",
-        "get_route_details",
-        "delegate_task",
-    }:
+    if call.name not in SUPPORTED_TOOL_NAMES:
         raise AgentError(
             "EXECUTION_FAILED",
             f"Unsupported tool requested: {call.name}",
@@ -317,79 +386,85 @@ def _run_tool_call(call: Any, request_task_id: str) -> Any:
             400,
         )
 
-    if call.name == "get_task_context":
+    if call.name == "aiv_get_task_lineage":
         tool_args = {"task_id": request_task_id}
         if isinstance(args.get("max_parent_depth"), (int, float)):
             tool_args["max_parent_depth"] = args["max_parent_depth"]
-        return mcp_call_tool("get_task_context", tool_args)
+        return mcp_call_tool("aiv_get_task_lineage", tool_args)
 
-    if call.name == "list_reachable_routes":
+    if call.name == "aiv_list_routes":
         tool_args = {"task_id": request_task_id}
         if isinstance(args.get("page"), (int, float)):
             tool_args["page"] = args["page"]
         if isinstance(args.get("per_page"), (int, float)):
             tool_args["per_page"] = args["per_page"]
-        return mcp_call_tool("list_reachable_routes", tool_args)
+        return mcp_call_tool("aiv_list_routes", tool_args)
 
-    if call.name == "get_route_details":
+    if call.name == "aiv_get_route_details":
         slug = args.get("slug") or args.get("connection_slug")
         if not isinstance(slug, str) or not slug:
             raise AgentError(
                 "EXECUTION_FAILED",
-                "Model must provide route slug for get_route_details",
+                "Model must provide route slug for aiv_get_route_details",
                 True,
                 502,
             )
-        return mcp_call_tool("get_route_details", {"task_id": request_task_id, "slug": slug})
+        return mcp_call_tool("aiv_get_route_details", {"task_id": request_task_id, "slug": slug})
 
-    connection = args.get("connection") or args.get("connection_slug")
-    target_agent_did = args.get("target_agent_did")
-    if not isinstance(connection, str) or not isinstance(target_agent_did, str):
-        raise AgentError(
-            "EXECUTION_FAILED",
-            "Model must provide connection and target_agent_did for delegate_task",
-            True,
-            502,
-        )
-    route_details: Any = None
-    if _is_uuid(connection):
-        return {
-            "error": {
-                "code": "TOOL_ARGUMENTS_INVALID",
-                "message": "delegate_task requires route slug in connection field, not UUID",
-            }
-        }
-    route_details = mcp_call_tool(
-        "get_route_details", {"task_id": request_task_id, "slug": connection}
-    )
-    resolved_target = _extract_target_did(route_details)
-    if isinstance(resolved_target, str):
-        target_agent_did = resolved_target
-    if not _is_plain_object(args.get("payload")):
-        if route_details is None and not _is_uuid(connection):
-            route_details = mcp_call_tool(
-                "get_route_details", {"task_id": request_task_id, "slug": connection}
+    if call.name == "aiv_delegate_task":
+        connection = args.get("connection") or args.get("connection_slug")
+        target_agent_did = args.get("target_agent_did")
+        if not isinstance(connection, str) or not isinstance(target_agent_did, str):
+            raise AgentError(
+                "EXECUTION_FAILED",
+                "Model must provide connection and target_agent_did for aiv_delegate_task",
+                True,
+                502,
             )
-        return {
-            "error": {
-                "code": "TOOL_ARGUMENTS_INVALID",
-                "message": (
-                    "delegate_task requires payload as a JSON object matching selected "
-                    "route intent schema"
-                ),
-            },
-            "route_details": route_details,
-        }
+        route_details: Any = None
+        if _is_uuid(connection):
+            return {
+                "error": {
+                    "code": "TOOL_ARGUMENTS_INVALID",
+                    "message": "aiv_delegate_task requires route slug in connection field, not UUID",
+                }
+            }
+        route_details = mcp_call_tool(
+            "aiv_get_route_details", {"task_id": request_task_id, "slug": connection}
+        )
+        resolved_target = _extract_target_did(route_details)
+        if isinstance(resolved_target, str):
+            target_agent_did = resolved_target
+        if not _is_plain_object(args.get("payload")):
+            if route_details is None and not _is_uuid(connection):
+                route_details = mcp_call_tool(
+                    "aiv_get_route_details", {"task_id": request_task_id, "slug": connection}
+                )
+            return {
+                "error": {
+                    "code": "TOOL_ARGUMENTS_INVALID",
+                    "message": (
+                        "aiv_delegate_task requires payload as a JSON object matching selected "
+                        "route intent schema"
+                    ),
+                },
+                "route_details": route_details,
+            }
 
-    delegate_args: dict[str, Any] = {
-        "task_id": request_task_id,
-        "connection": connection,
-        "target_agent": target_agent_did,
-        "intent": args.get("intent"),
-        "payload": args.get("payload"),
-        "context": args.get("context") if isinstance(args.get("context"), dict) else {},
-    }
-    return mcp_call_tool("delegate_task", delegate_args, target_agent_did)
+        delegate_args: dict[str, Any] = {
+            "task_id": request_task_id,
+            "connection": connection,
+            "target_agent": target_agent_did,
+            "intent": args.get("intent"),
+            "payload": args.get("payload"),
+            "context": args.get("context") if isinstance(args.get("context"), dict) else {},
+        }
+        return mcp_call_tool("aiv_delegate_task", delegate_args, target_agent_did)
+
+    generic_args = dict(args) if isinstance(args, dict) else {}
+    if call.name in TASK_SCOPED_TOOLS and not isinstance(generic_args.get("task_id"), str):
+        generic_args["task_id"] = request_task_id
+    return mcp_call_tool(call.name, generic_args, _extract_generic_target_did(generic_args))
 
 
 def _decide_with_llm(task: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -407,6 +482,8 @@ def _decide_with_llm(task: dict[str, Any], payload: dict[str, Any]) -> dict[str,
         [
             "You are Compliance Risk Auditor.",
             "You may use MCP tools to decide whether to delegate or complete locally.",
+            "Prefer the smallest necessary set of tools and avoid exploratory tool calls unless they are required to complete the task safely.",
+            "Use the route-first governance flow: aiv_get_task_lineage, aiv_list_routes, aiv_get_route_details, then aiv_delegate_task.",
             "Do not hardcode targets; discover routes via tools and delegate only via active discovered route.",
             "Depth guardrail: only delegate when context.depth < context.max_depth.",
             "When finished, respond with JSON object only:",

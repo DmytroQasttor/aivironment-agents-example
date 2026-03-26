@@ -1,16 +1,68 @@
 import type { A2AForwardRequest, OpsCoordinatePayload, OpsCoordinateResult } from "../types/a2a";
 import { mcpCallTool } from "../mcp/mcpClientHttp";
+import { PLATFORM_MCP_TOOLS } from "../integration-kit/mcpToolkit";
 import { AgentError } from "../utils/agentError";
 import { validateOpsCoordinateInput, validateOpsCoordinateOutput } from "../validation/schemas";
 import { getOpenAIMaxOutputTokens, getOpenAIModel, openai } from "../openai/openaiClient";
+
+const SUPPORTED_TOOL_NAMES = Object.values(PLATFORM_MCP_TOOLS);
+const TASK_SCOPED_TOOLS = new Set([
+  "aiv_get_task_lineage",
+  "aiv_list_routes",
+  "aiv_get_route_details",
+  "aiv_accept_task",
+  "aiv_complete_task",
+  "aiv_get_task_details",
+  "aiv_delegate_task",
+]);
+
+const GENERIC_TOOL_DESCRIPTIONS: Record<string, string> = {
+  aiv_identify: "Return current agent identity and governance registration details.",
+  aiv_check_action: "Check whether a planned action is allowed under governance rules before executing it.",
+  aiv_log_activity: "Write an auditable activity event for the current agent or task.",
+  aiv_heartbeat: "Send a heartbeat update so the platform knows this agent is active.",
+  aiv_compliance_rules: "Fetch compliance and governance rules relevant to this agent.",
+  aiv_poll_tasks: "Poll for inbound tasks that this agent can claim and work on.",
+  aiv_complete_task: "Complete the current task with result or error details when work is finished.",
+  aiv_discover_agents: "Search for available agents and their metadata.",
+  aiv_platform_stats: "Retrieve governance and platform-level status metrics.",
+  aiv_send_message: "Send a direct message to another agent using target_agent, intent, payload, and optional context.",
+  aiv_get_rate_limit_status: "Check current rate limit usage and remaining allowance for this agent.",
+  aiv_get_my_connections: "List this agent's active and pending connections.",
+  aiv_request_connection: "Request a new connection to another agent or capability.",
+  aiv_rotate_secret: "Rotate the current agent secret when operating in simple auth mode.",
+  aiv_get_task_details: "Fetch detailed state and metadata for the current task.",
+  aiv_get_my_metrics: "Get metrics and performance data for the current agent.",
+  aiv_update_my_metadata: "Update this agent's public metadata and descriptive fields.",
+  aiv_test_connection: "Test whether an agent connection is healthy and usable.",
+  aiv_get_compliance_evidence: "Retrieve evidence records for compliance checks or audit trails.",
+  aiv_store_data: "Store agent data or state in governance-managed storage.",
+  aiv_retrieve_data: "Retrieve previously stored governance-managed data by key or namespace.",
+  aiv_emergency_shutdown: "Trigger an emergency shutdown flow for this agent.",
+  aiv_get_my_activity: "List recent activity and audit events for the current agent.",
+  aiv_accept_task: "Claim an inbound task so this agent becomes the active worker.",
+};
+
+function createGenericToolDefinition(name: string) {
+  return {
+    type: "function" as const,
+    name,
+    description: GENERIC_TOOL_DESCRIPTIONS[name] ?? `Call governance MCP tool ${name}.`,
+    parameters: {
+      type: "object",
+      properties: {},
+      additionalProperties: true,
+    },
+  };
+}
 
 // Tool catalog exposed to OpenAI tool-calling loop.
 // The model decides which tools to invoke, in what order, and whether to delegate.
 const toolDefinitions = [
   {
     type: "function",
-    name: "get_task_context",
-    description: "Fetch context and lineage details for the current task id.",
+    name: "aiv_get_task_lineage",
+    description: "Fetch lineage details for the current task id before delegation.",
     parameters: {
       type: "object",
       required: [],
@@ -22,7 +74,7 @@ const toolDefinitions = [
   },
   {
     type: "function",
-    name: "list_reachable_routes",
+    name: "aiv_list_routes",
     description: "List active routes this agent can use for delegation from current task.",
     parameters: {
       type: "object",
@@ -36,7 +88,7 @@ const toolDefinitions = [
   },
   {
     type: "function",
-    name: "get_route_details",
+    name: "aiv_get_route_details",
     description: "Get details and schema expectations for a selected route.",
     parameters: {
       type: "object",
@@ -49,7 +101,7 @@ const toolDefinitions = [
   },
   {
     type: "function",
-    name: "delegate_task",
+    name: "aiv_delegate_task",
     description:
       "Delegate to a target agent. Use only with discovered active routes and correct lineage context.",
     parameters: {
@@ -70,6 +122,17 @@ const toolDefinitions = [
       additionalProperties: false,
     },
   },
+  ...SUPPORTED_TOOL_NAMES
+    .filter(
+      (name) =>
+        ![
+          "aiv_get_task_lineage",
+          "aiv_list_routes",
+          "aiv_get_route_details",
+          "aiv_delegate_task",
+        ].includes(name),
+    )
+    .map((name) => createGenericToolDefinition(name)),
 ];
 
 // Final guard: we never return model output unless it matches the declared result schema.
@@ -102,7 +165,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// Helper used to reject UUID in route-slug fields when delegate_task expects slugs.
+// Helper used to reject UUID in route-slug fields when aiv_delegate_task expects slugs.
 function isUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     value,
@@ -276,6 +339,16 @@ function normalizePayloadBySchema(
   return normalized;
 }
 
+function extractGenericTargetDid(args: Record<string, unknown>) {
+  const candidates = [args.target_agent, args.target_agent_did];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.length > 0) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
 /**
  * Executes one model-requested tool call.
  * This function is the policy boundary that:
@@ -286,9 +359,9 @@ function normalizePayloadBySchema(
 async function runToolCall(call: any, requestTaskId: string) {
   const args = parseJsonArgs(call.arguments);
   switch (call.name) {
-    case "get_task_context":
+    case "aiv_get_task_lineage":
       return mcpCallTool(
-        "get_task_context",
+        "aiv_get_task_lineage",
         {
           task_id: requestTaskId,
           ...(typeof args.max_parent_depth === "number"
@@ -296,13 +369,13 @@ async function runToolCall(call: any, requestTaskId: string) {
             : {}),
         },
       );
-    case "list_reachable_routes":
-      return mcpCallTool("list_reachable_routes", {
+    case "aiv_list_routes":
+      return mcpCallTool("aiv_list_routes", {
         task_id: requestTaskId,
         ...(typeof args.page === "number" ? { page: args.page } : {}),
         ...(typeof args.per_page === "number" ? { per_page: args.per_page } : {}),
       });
-    case "get_route_details": {
+    case "aiv_get_route_details": {
       const slug =
         typeof args.slug === "string"
           ? args.slug
@@ -312,17 +385,17 @@ async function runToolCall(call: any, requestTaskId: string) {
       if (!slug) {
         throw new AgentError(
           "EXECUTION_FAILED",
-          "Model must provide route slug for get_route_details",
+          "Model must provide route slug for aiv_get_route_details",
           true,
           502,
         );
       }
-      return mcpCallTool("get_route_details", {
+      return mcpCallTool("aiv_get_route_details", {
         task_id: requestTaskId,
         slug,
       });
     }
-    case "delegate_task": {
+    case "aiv_delegate_task": {
       const connection =
         typeof args.connection === "string"
           ? args.connection
@@ -333,29 +406,29 @@ async function runToolCall(call: any, requestTaskId: string) {
       if (!connection || typeof targetAgentDid !== "string") {
         throw new AgentError(
           "EXECUTION_FAILED",
-          "Model must provide connection and target_agent_did for delegate_task",
+          "Model must provide connection and target_agent_did for aiv_delegate_task",
           true,
           502,
         );
       }
       let routeDetails: unknown = null;
-      // Platform runtime expects route slug in `connection` for delegate_task.
+      // Platform runtime expects route slug in `connection` for aiv_delegate_task.
       if (isUuid(connection)) {
         return {
           error: {
             code: "TOOL_ARGUMENTS_INVALID",
-            message: "delegate_task requires route slug in connection field, not UUID",
+            message: "aiv_delegate_task requires route slug in connection field, not UUID",
           },
         };
       }
-      routeDetails = await mcpCallTool("get_route_details", {
+      routeDetails = await mcpCallTool("aiv_get_route_details", {
         task_id: requestTaskId,
         slug: connection,
       });
       targetAgentDid = extractTargetDid(routeDetails) ?? targetAgentDid;
       if (!isPlainObject(args.payload)) {
         if (!routeDetails && !isUuid(connection)) {
-          routeDetails = await mcpCallTool("get_route_details", {
+          routeDetails = await mcpCallTool("aiv_get_route_details", {
             task_id: requestTaskId,
             slug: connection,
           });
@@ -364,14 +437,14 @@ async function runToolCall(call: any, requestTaskId: string) {
           error: {
             code: "TOOL_ARGUMENTS_INVALID",
             message:
-              "delegate_task requires payload as a JSON object matching selected route intent schema",
+              "aiv_delegate_task requires payload as a JSON object matching selected route intent schema",
           },
           route_details: routeDetails,
         };
       }
       // Context defaults to {} to match platform canonical hashing behavior.
       return mcpCallTool(
-        "delegate_task",
+        "aiv_delegate_task",
         {
           task_id: requestTaskId,
           connection,
@@ -383,13 +456,21 @@ async function runToolCall(call: any, requestTaskId: string) {
         targetAgentDid,
       );
     }
-    default:
-      throw new AgentError(
-        "EXECUTION_FAILED",
-        `Unsupported tool requested: ${call.name}`,
-        false,
-        400,
-      );
+    default: {
+      if (!SUPPORTED_TOOL_NAMES.includes(call.name)) {
+        throw new AgentError(
+          "EXECUTION_FAILED",
+          `Unsupported tool requested: ${call.name}`,
+          false,
+          400,
+        );
+      }
+      const genericArgs = isPlainObject(args) ? { ...args } : {};
+      if (TASK_SCOPED_TOOLS.has(call.name) && typeof genericArgs.task_id !== "string") {
+        genericArgs.task_id = requestTaskId;
+      }
+      return mcpCallTool(call.name, genericArgs, extractGenericTargetDid(genericArgs));
+    }
   }
 }
 
@@ -409,6 +490,8 @@ async function decideWithLlm(params: {
   const initialPrompt = [
     "You are Delivery Planning Coordinator.",
     "You may use MCP tools to decide whether to delegate or complete locally.",
+    "Prefer the smallest necessary set of tools and avoid exploratory tool calls unless they are required to complete the task safely.",
+    "Use the route-first governance flow: aiv_get_task_lineage, aiv_list_routes, aiv_get_route_details, then aiv_delegate_task.",
     "Do not hardcode targets; discover routes via tools and delegate only via active discovered route.",
     "Depth guardrail: only delegate when context.depth < context.max_depth.",
     "When finished, respond with JSON object only:",
