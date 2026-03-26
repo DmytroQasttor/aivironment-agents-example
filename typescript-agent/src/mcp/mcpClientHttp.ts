@@ -23,6 +23,25 @@ interface ToolAuthSpec {
   targetAgentDid?: string;
 }
 
+type ToolAuthResolver = (toolArgs: Record<string, unknown>) => ToolAuthSpec | null;
+
+function getAuthMode() {
+  return (process.env.AGENT_AUTH_MODE ?? "simple").toLowerCase();
+}
+
+function getAgentSecretForMcpTools() {
+  const agentSecret = process.env.AGENT_SECRET ?? process.env.AGENT_API_KEY;
+  if (!agentSecret) {
+    throw new AgentError(
+      "CONFIG_INVALID",
+      "AGENT_SECRET or AGENT_API_KEY is required for simple governance MCP auth",
+      false,
+      500,
+    );
+  }
+  return agentSecret;
+}
+
 // MCP stream endpoint configured by deploy/dev environment.
 function getMcpUrl() {
   if (!process.env.MCP_HTTP_URL) {
@@ -92,25 +111,25 @@ function canonicalJson(value: unknown) {
   return JSON.stringify(sortKeysDeep(value));
 }
 
-/**
- * Maps each MCP tool call to the platform auth canonical target:
- * method + path + body + optional target DID.
- * This is required for advanced auth signatures to match backend verification.
- */
-function resolveToolAuthSpec(params: unknown): ToolAuthSpec | null {
-  if (!isRecord(params)) {
-    return null;
-  }
-  const name = params.name;
-  const toolArgs = params.arguments;
-  if (typeof name !== "string" || !isRecord(toolArgs)) {
-    return null;
-  }
+function stripGovernanceAuthFields(toolArgs: Record<string, unknown>) {
+  const {
+    agent_secret: _agentSecret,
+    agent_did: _agentDid,
+    timestamp_header: _timestampHeader,
+    signature_header: _signatureHeader,
+    algorithm_header: _algorithmHeader,
+    ...businessArgs
+  } = toolArgs;
+  return businessArgs;
+}
 
-  if (name === "list_reachable_routes") {
-    return { method: "GET", path: "/api/v1/runtime/routes", body: "" };
-  }
-  if (name === "get_route_details") {
+const STATIC_TOOL_AUTH_SPECS: Record<string, ToolAuthSpec> = {
+  list_reachable_routes: { method: "GET", path: "/api/v1/runtime/routes", body: "" },
+  aiv_list_routes: { method: "GET", path: "/api/v1/runtime/routes", body: "" },
+};
+
+const DYNAMIC_TOOL_AUTH_SPECS: Record<string, ToolAuthResolver> = {
+  get_route_details(toolArgs) {
     const slug = toolArgs.slug;
     if (typeof slug !== "string" || !slug) {
       return null;
@@ -120,8 +139,19 @@ function resolveToolAuthSpec(params: unknown): ToolAuthSpec | null {
       path: `/api/v1/runtime/routes/${encodeURIComponent(slug)}`,
       body: "",
     };
-  }
-  if (name === "get_task_context") {
+  },
+  aiv_get_route_details(toolArgs) {
+    const slug = toolArgs.slug;
+    if (typeof slug !== "string" || !slug) {
+      return null;
+    }
+    return {
+      method: "GET",
+      path: `/api/v1/runtime/routes/${encodeURIComponent(slug)}`,
+      body: "",
+    };
+  },
+  get_task_context(toolArgs) {
     const taskId = toolArgs.task_id;
     if (typeof taskId !== "string" || !taskId) {
       return null;
@@ -131,8 +161,19 @@ function resolveToolAuthSpec(params: unknown): ToolAuthSpec | null {
       path: `/api/v1/runtime/task-context/${encodeURIComponent(taskId)}`,
       body: "",
     };
-  }
-  if (name === "delegate_task") {
+  },
+  aiv_get_task_lineage(toolArgs) {
+    const taskId = toolArgs.task_id;
+    if (typeof taskId !== "string" || !taskId) {
+      return null;
+    }
+    return {
+      method: "GET",
+      path: `/api/v1/runtime/task-context/${encodeURIComponent(taskId)}`,
+      body: "",
+    };
+  },
+  delegate_task(toolArgs) {
     const targetAgent = toolArgs.target_agent;
     if (typeof targetAgent !== "string" || !targetAgent) {
       return null;
@@ -152,19 +193,96 @@ function resolveToolAuthSpec(params: unknown): ToolAuthSpec | null {
       body: canonicalJson(canonicalBody),
       targetAgentDid: targetAgent,
     };
+  },
+  aiv_delegate_task(toolArgs) {
+    const targetAgent = toolArgs.target_agent;
+    if (typeof targetAgent !== "string" || !targetAgent) {
+      return null;
+    }
+    const canonicalBody: Record<string, unknown> = {
+      target_agent: targetAgent,
+      intent: toolArgs.intent,
+      payload: toolArgs.payload,
+      ...(isRecord(toolArgs.context)
+        ? { context: toolArgs.context }
+        : {}),
+      connection: toolArgs.connection,
+    };
+    return {
+      method: "POST",
+      path: "/api/v1/a2a/send",
+      body: canonicalJson(canonicalBody),
+      targetAgentDid: targetAgent,
+    };
+  },
+};
+
+function withGovernanceToolIdentity(params: unknown): unknown {
+  if (!isRecord(params) || !isRecord(params.arguments)) {
+    return params;
+  }
+  const name = params.name;
+  if (typeof name !== "string" || !name.startsWith("aiv_")) {
+    return params;
+  }
+
+  return {
+    ...params,
+    arguments: {
+      ...params.arguments,
+      agent_did: process.env.AGENT_DID,
+      ...(getAuthMode() === "simple"
+        ? { agent_secret: getAgentSecretForMcpTools() }
+        : {}),
+    },
+  };
+}
+
+/**
+ * Maps each MCP tool call to the platform auth canonical target:
+ * method + path + body + optional target DID.
+ * This is required for advanced auth signatures to match backend verification.
+ */
+function resolveToolAuthSpec(params: unknown): ToolAuthSpec | null {
+  if (!isRecord(params)) {
+    return null;
+  }
+  const name = params.name;
+  const toolArgs = params.arguments;
+  if (typeof name !== "string" || !isRecord(toolArgs)) {
+    return null;
+  }
+
+  const staticSpec = STATIC_TOOL_AUTH_SPECS[name];
+  if (staticSpec) {
+    return staticSpec;
+  }
+
+  const dynamicSpecResolver = DYNAMIC_TOOL_AUTH_SPECS[name];
+  if (dynamicSpecResolver) {
+    return dynamicSpecResolver(toolArgs);
+  }
+
+  if (name.startsWith("aiv_")) {
+    return {
+      method: "POST",
+      path: `mcp/${name}`,
+      body: canonicalJson(stripGovernanceAuthFields(toolArgs)),
+    };
   }
 
   return null;
 }
 
-// Injects auth headers into MCP tool arguments (`*_header` fields expected by backend tools).
+// Injects auth fields expected by the governance MCP tool contract.
 async function withToolAuthArguments(params: unknown): Promise<unknown> {
-  if (!isRecord(params) || !isRecord(params.arguments)) {
-    return params;
+  const withIdentity = withGovernanceToolIdentity(params);
+  if (!isRecord(withIdentity) || !isRecord(withIdentity.arguments)) {
+    return withIdentity;
   }
-  const spec = resolveToolAuthSpec(params);
+  const spec = resolveToolAuthSpec(withIdentity);
   if (!spec) {
-    return params;
+    return withIdentity;
   }
 
   const authHeaders = await buildOutboundAuthHeaders({
@@ -175,15 +293,9 @@ async function withToolAuthArguments(params: unknown): Promise<unknown> {
   });
 
   return {
-    ...params,
+    ...withIdentity,
     arguments: {
-      ...params.arguments,
-      ...(typeof authHeaders.Authorization === "string"
-        ? { authorization_header: authHeaders.Authorization }
-        : {}),
-      ...(typeof authHeaders["X-Agent-ID"] === "string"
-        ? { agent_id_header: authHeaders["X-Agent-ID"] }
-        : {}),
+      ...withIdentity.arguments,
       ...(typeof authHeaders["X-Timestamp"] === "string"
         ? { timestamp_header: authHeaders["X-Timestamp"] }
         : {}),
@@ -302,18 +414,18 @@ export async function mcpCallTool(
 
 // Convenience wrappers used by examples/tests and documentation readability.
 export async function mcpGetTaskContext(taskId: string, correlationId: string) {
-  return mcpCallTool("get_task_context", {
+  return mcpCallTool("aiv_get_task_lineage", {
     task_id: taskId,
     correlation_id: correlationId,
   });
 }
 
 export async function mcpListReachableRoutes(taskId: string) {
-  return mcpCallTool("list_reachable_routes", { task_id: taskId });
+  return mcpCallTool("aiv_list_routes", { task_id: taskId });
 }
 
 export async function mcpGetRouteDetails(taskId: string, slug: string) {
-  return mcpCallTool("get_route_details", {
+  return mcpCallTool("aiv_get_route_details", {
     task_id: taskId,
     slug,
   });
@@ -328,7 +440,7 @@ export async function mcpDelegateTask(params: {
   context: Record<string, unknown>;
 }) {
   return mcpCallTool(
-    "delegate_task",
+    "aiv_delegate_task",
     {
       task_id: params.taskId,
       connection: params.connection,

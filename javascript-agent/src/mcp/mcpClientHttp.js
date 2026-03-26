@@ -5,6 +5,23 @@ let nextId = 1;
 let sessionId = null;
 let initialized = false;
 
+function getAuthMode() {
+  return (process.env.AGENT_AUTH_MODE ?? "simple").toLowerCase();
+}
+
+function getAgentSecretForMcpTools() {
+  const agentSecret = process.env.AGENT_SECRET ?? process.env.AGENT_API_KEY;
+  if (!agentSecret) {
+    throw new AgentError(
+      "CONFIG_INVALID",
+      "AGENT_SECRET or AGENT_API_KEY is required for simple governance MCP auth",
+      false,
+      500,
+    );
+  }
+  return agentSecret;
+}
+
 // MCP stream endpoint configured via environment.
 function getMcpUrl() {
   if (!process.env.MCP_HTTP_URL) {
@@ -71,21 +88,25 @@ function canonicalJson(value) {
   return JSON.stringify(sortKeysDeep(value));
 }
 
-// Maps tool names to logical platform auth canonical method/path/body.
-function resolveToolAuthSpec(params) {
-  if (!isRecord(params)) {
-    return null;
-  }
-  const name = params.name;
-  const toolArgs = params.arguments;
-  if (typeof name !== "string" || !isRecord(toolArgs)) {
-    return null;
-  }
+function stripGovernanceAuthFields(toolArgs) {
+  const {
+    agent_secret: _agentSecret,
+    agent_did: _agentDid,
+    timestamp_header: _timestampHeader,
+    signature_header: _signatureHeader,
+    algorithm_header: _algorithmHeader,
+    ...businessArgs
+  } = toolArgs;
+  return businessArgs;
+}
 
-  if (name === "list_reachable_routes") {
-    return { method: "GET", path: "/api/v1/runtime/routes", body: "" };
-  }
-  if (name === "get_route_details") {
+const STATIC_TOOL_AUTH_SPECS = {
+  list_reachable_routes: { method: "GET", path: "/api/v1/runtime/routes", body: "" },
+  aiv_list_routes: { method: "GET", path: "/api/v1/runtime/routes", body: "" },
+};
+
+const DYNAMIC_TOOL_AUTH_SPECS = {
+  get_route_details(toolArgs) {
     if (typeof toolArgs.slug !== "string" || !toolArgs.slug) {
       return null;
     }
@@ -94,8 +115,18 @@ function resolveToolAuthSpec(params) {
       path: `/api/v1/runtime/routes/${encodeURIComponent(toolArgs.slug)}`,
       body: "",
     };
-  }
-  if (name === "get_task_context") {
+  },
+  aiv_get_route_details(toolArgs) {
+    if (typeof toolArgs.slug !== "string" || !toolArgs.slug) {
+      return null;
+    }
+    return {
+      method: "GET",
+      path: `/api/v1/runtime/routes/${encodeURIComponent(toolArgs.slug)}`,
+      body: "",
+    };
+  },
+  get_task_context(toolArgs) {
     if (typeof toolArgs.task_id !== "string" || !toolArgs.task_id) {
       return null;
     }
@@ -104,8 +135,18 @@ function resolveToolAuthSpec(params) {
       path: `/api/v1/runtime/task-context/${encodeURIComponent(toolArgs.task_id)}`,
       body: "",
     };
-  }
-  if (name === "delegate_task") {
+  },
+  aiv_get_task_lineage(toolArgs) {
+    if (typeof toolArgs.task_id !== "string" || !toolArgs.task_id) {
+      return null;
+    }
+    return {
+      method: "GET",
+      path: `/api/v1/runtime/task-context/${encodeURIComponent(toolArgs.task_id)}`,
+      body: "",
+    };
+  },
+  delegate_task(toolArgs) {
     if (typeof toolArgs.target_agent !== "string" || !toolArgs.target_agent) {
       return null;
     }
@@ -124,18 +165,88 @@ function resolveToolAuthSpec(params) {
       body: canonicalJson(canonicalBody),
       targetAgentDid: toolArgs.target_agent,
     };
+  },
+  aiv_delegate_task(toolArgs) {
+    if (typeof toolArgs.target_agent !== "string" || !toolArgs.target_agent) {
+      return null;
+    }
+    const canonicalBody = {
+      target_agent: toolArgs.target_agent,
+      intent: toolArgs.intent,
+      payload: toolArgs.payload,
+      ...(isRecord(toolArgs.context)
+        ? { context: toolArgs.context }
+        : {}),
+      connection: toolArgs.connection,
+    };
+    return {
+      method: "POST",
+      path: "/api/v1/a2a/send",
+      body: canonicalJson(canonicalBody),
+      targetAgentDid: toolArgs.target_agent,
+    };
+  },
+};
+
+function withGovernanceToolIdentity(params) {
+  if (!isRecord(params) || !isRecord(params.arguments)) {
+    return params;
+  }
+  if (typeof params.name !== "string" || !params.name.startsWith("aiv_")) {
+    return params;
+  }
+  return {
+    ...params,
+    arguments: {
+      ...params.arguments,
+      agent_did: process.env.AGENT_DID,
+      ...(getAuthMode() === "simple"
+        ? { agent_secret: getAgentSecretForMcpTools() }
+        : {}),
+    },
+  };
+}
+
+// Maps tool names to logical platform auth canonical method/path/body.
+function resolveToolAuthSpec(params) {
+  if (!isRecord(params)) {
+    return null;
+  }
+  const name = params.name;
+  const toolArgs = params.arguments;
+  if (typeof name !== "string" || !isRecord(toolArgs)) {
+    return null;
+  }
+
+  const staticSpec = STATIC_TOOL_AUTH_SPECS[name];
+  if (staticSpec) {
+    return staticSpec;
+  }
+
+  const dynamicSpecResolver = DYNAMIC_TOOL_AUTH_SPECS[name];
+  if (dynamicSpecResolver) {
+    return dynamicSpecResolver(toolArgs);
+  }
+
+  if (name.startsWith("aiv_")) {
+    return {
+      method: "POST",
+      path: `mcp/${name}`,
+      body: canonicalJson(stripGovernanceAuthFields(toolArgs)),
+    };
   }
   return null;
 }
 
-// Inject auth headers expected by MCP tool wrappers on backend side.
+// Inject auth fields expected by the governance MCP tool contract.
 async function withToolAuthArguments(params) {
-  if (!isRecord(params) || !isRecord(params.arguments)) {
-    return params;
+  const withIdentity = withGovernanceToolIdentity(params);
+  if (!isRecord(withIdentity) || !isRecord(withIdentity.arguments)) {
+    return withIdentity;
   }
-  const spec = resolveToolAuthSpec(params);
+  const spec = resolveToolAuthSpec(withIdentity);
   if (!spec) {
-    return params;
+    return withIdentity;
   }
 
   const authHeaders = await buildOutboundAuthHeaders({
@@ -146,15 +257,9 @@ async function withToolAuthArguments(params) {
   });
 
   return {
-    ...params,
+    ...withIdentity,
     arguments: {
-      ...params.arguments,
-      ...(typeof authHeaders.Authorization === "string"
-        ? { authorization_header: authHeaders.Authorization }
-        : {}),
-      ...(typeof authHeaders["X-Agent-ID"] === "string"
-        ? { agent_id_header: authHeaders["X-Agent-ID"] }
-        : {}),
+      ...withIdentity.arguments,
       ...(typeof authHeaders["X-Timestamp"] === "string"
         ? { timestamp_header: authHeaders["X-Timestamp"] }
         : {}),
@@ -265,18 +370,18 @@ export async function mcpCallTool(name, args, targetAgentDid) {
 
 // Convenience wrappers for readability in examples/docs.
 export async function mcpGetTaskContext(taskId, correlationId) {
-  return mcpCallTool("get_task_context", {
+  return mcpCallTool("aiv_get_task_lineage", {
     task_id: taskId,
     correlation_id: correlationId,
   });
 }
 
 export async function mcpListReachableRoutes(taskId) {
-  return mcpCallTool("list_reachable_routes", { task_id: taskId });
+  return mcpCallTool("aiv_list_routes", { task_id: taskId });
 }
 
 export async function mcpGetRouteDetails(taskId, slug) {
-  return mcpCallTool("get_route_details", { task_id: taskId, slug });
+  return mcpCallTool("aiv_get_route_details", { task_id: taskId, slug });
 }
 
 export async function mcpDelegateTask({
@@ -288,7 +393,7 @@ export async function mcpDelegateTask({
   context,
 }) {
   return mcpCallTool(
-    "delegate_task",
+    "aiv_delegate_task",
     {
       task_id: taskId,
       connection,

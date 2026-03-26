@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 
 from app.config import get_auth_mode, require_env
+from app.errors import AgentError
 
 
 def _sha256_hex(value: str) -> str:
@@ -41,9 +42,14 @@ def build_outbound_auth_headers(
     agent_did = require_env("AGENT_DID", "AGENT_DID is required")
 
     if mode == "simple":
-        api_key = require_env(
-            "AGENT_API_KEY", "AGENT_API_KEY is required for simple auth mode"
-        )
+        api_key = os.getenv("AGENT_SECRET") or os.getenv("AGENT_API_KEY")
+        if not api_key:
+            raise AgentError(
+                "CONFIG_INVALID",
+                "AGENT_SECRET or AGENT_API_KEY is required for simple auth mode",
+                False,
+                500,
+            )
         return {
             "Authorization": f"Bearer {api_key}",
             "X-Agent-ID": agent_did,

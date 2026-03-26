@@ -76,17 +76,18 @@ export async function buildOutboundAuthHeaders(params: {
   }
 
   if (mode === "simple") {
-    if (!process.env.AGENT_API_KEY) {
+    const apiKey = process.env.AGENT_SECRET ?? process.env.AGENT_API_KEY;
+    if (!apiKey) {
       throw new AgentError(
         "CONFIG_INVALID",
-        "AGENT_API_KEY is required for simple auth mode",
+        "AGENT_SECRET or AGENT_API_KEY is required for simple auth mode",
         false,
         500,
       );
     }
 
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${process.env.AGENT_API_KEY}`,
+      Authorization: `Bearer ${apiKey}`,
       "X-Agent-ID": agentDid,
     };
     return headers;

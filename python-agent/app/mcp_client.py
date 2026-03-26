@@ -1,4 +1,5 @@
 import json
+import os
 from itertools import count
 from typing import Any
 from urllib.parse import urlparse
@@ -12,6 +13,18 @@ from app.errors import AgentError
 _rpc_ids = count(1)
 _session_id: str | None = None
 _initialized = False
+
+
+def _get_agent_secret_for_mcp_tools() -> str:
+    agent_secret = os.getenv("AGENT_SECRET") or os.getenv("AGENT_API_KEY")
+    if not isinstance(agent_secret, str) or not agent_secret:
+        raise AgentError(
+            "CONFIG_INVALID",
+            "AGENT_SECRET or AGENT_API_KEY is required for simple governance MCP auth",
+            False,
+            500,
+        )
+    return agent_secret
 
 
 def _parse_sse_json_frames(raw_text: str) -> list[dict[str, Any]]:
@@ -31,6 +44,21 @@ def _parse_sse_json_frames(raw_text: str) -> list[dict[str, Any]]:
         if isinstance(parsed, dict):
             responses.append(parsed)
     return responses
+
+
+def _strip_governance_auth_fields(tool_args: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in tool_args.items()
+        if key
+        not in {
+            "agent_secret",
+            "agent_did",
+            "timestamp_header",
+            "signature_header",
+            "algorithm_header",
+        }
+    }
 
 
 def _pick_rpc_response(responses: list[dict[str, Any]], request_id: int) -> dict[str, Any] | None:
@@ -95,16 +123,92 @@ def _resolve_tool_auth_spec(params: dict[str, Any]) -> dict[str, Any] | None:
             ),
             "target_agent_did": target_agent,
         }
+    if name == "aiv_list_routes":
+        return {"method": "GET", "path": "/api/v1/runtime/routes", "body": ""}
+    if name == "aiv_get_route_details":
+        slug = tool_args.get("slug")
+        if not isinstance(slug, str) or not slug:
+            return None
+        return {
+            "method": "GET",
+            "path": f"/api/v1/runtime/routes/{slug}",
+            "body": "",
+        }
+    if name == "aiv_get_task_lineage":
+        task_id = tool_args.get("task_id")
+        if not isinstance(task_id, str) or not task_id:
+            return None
+        return {
+            "method": "GET",
+            "path": f"/api/v1/runtime/task-context/{task_id}",
+            "body": "",
+        }
+    if name == "aiv_delegate_task":
+        target_agent = tool_args.get("target_agent")
+        if not isinstance(target_agent, str) or not target_agent:
+            return None
+        context_value = tool_args.get("context")
+        include_context = isinstance(context_value, dict)
+        canonical_body: dict[str, Any] = {
+            "target_agent": target_agent,
+            "intent": tool_args.get("intent"),
+            "payload": tool_args.get("payload"),
+            **({"context": context_value} if include_context else {}),
+            "connection": tool_args.get("connection"),
+        }
+        return {
+            "method": "POST",
+            "path": "/api/v1/a2a/send",
+            "body": json.dumps(
+                canonical_body,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ),
+            "target_agent_did": target_agent,
+        }
+    if name.startswith("aiv_"):
+        return {
+            "method": "POST",
+            "path": f"mcp/{name}",
+            "body": json.dumps(
+                _strip_governance_auth_fields(tool_args),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ),
+        }
     return None
 
 
-def _with_tool_auth_arguments(params: dict[str, Any]) -> dict[str, Any]:
-    """Inject auth headers expected by backend MCP tool wrappers."""
+def _with_governance_tool_identity(params: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(params.get("arguments"), dict):
         return params
-    spec = _resolve_tool_auth_spec(params)
-    if not spec:
+    name = params.get("name")
+    if not isinstance(name, str) or not name.startswith("aiv_"):
         return params
+    return {
+        **params,
+        "arguments": {
+            **params["arguments"],
+            "agent_did": require_env("AGENT_DID", "AGENT_DID is required"),
+            **(
+                {"agent_secret": _get_agent_secret_for_mcp_tools()}
+                if os.getenv("AGENT_AUTH_MODE", "simple").lower() == "simple"
+                else {}
+            ),
+        },
+    }
+
+
+def _with_tool_auth_arguments(params: dict[str, Any]) -> dict[str, Any]:
+    """Inject auth fields expected by the governance MCP tool contract."""
+    with_identity = _with_governance_tool_identity(params)
+    if not isinstance(with_identity.get("arguments"), dict):
+        return with_identity
+    spec = _resolve_tool_auth_spec(with_identity)
+    if not spec:
+        return with_identity
 
     auth_headers = build_outbound_auth_headers(
         method=spec["method"],
@@ -113,19 +217,9 @@ def _with_tool_auth_arguments(params: dict[str, Any]) -> dict[str, Any]:
         target_agent_did=spec.get("target_agent_did"),
     )
     return {
-        **params,
+        **with_identity,
         "arguments": {
-            **params["arguments"],
-            **(
-                {"authorization_header": auth_headers["Authorization"]}
-                if isinstance(auth_headers.get("Authorization"), str)
-                else {}
-            ),
-            **(
-                {"agent_id_header": auth_headers["X-Agent-ID"]}
-                if isinstance(auth_headers.get("X-Agent-ID"), str)
-                else {}
-            ),
+            **with_identity["arguments"],
             **(
                 {"timestamp_header": auth_headers["X-Timestamp"]}
                 if isinstance(auth_headers.get("X-Timestamp"), str)
@@ -253,16 +347,16 @@ def mcp_call_tool(
 
 def mcp_get_task_context(task_id: str, correlation_id: str) -> Any:
     return mcp_call_tool(
-        "get_task_context", {"task_id": task_id, "correlation_id": correlation_id}
+        "aiv_get_task_lineage", {"task_id": task_id, "correlation_id": correlation_id}
     )
 
 
 def mcp_list_reachable_routes(task_id: str) -> Any:
-    return mcp_call_tool("list_reachable_routes", {"task_id": task_id})
+    return mcp_call_tool("aiv_list_routes", {"task_id": task_id})
 
 
 def mcp_get_route_details(task_id: str, slug: str) -> Any:
-    return mcp_call_tool("get_route_details", {"task_id": task_id, "slug": slug})
+    return mcp_call_tool("aiv_get_route_details", {"task_id": task_id, "slug": slug})
 
 
 def mcp_delegate_task(
@@ -275,7 +369,7 @@ def mcp_delegate_task(
 ) -> Any:
     """Helper for delegation tool with target DID forwarded for advanced auth."""
     return mcp_call_tool(
-        "delegate_task",
+        "aiv_delegate_task",
         {
             "task_id": task_id,
             "connection": connection,
