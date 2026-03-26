@@ -9,11 +9,7 @@ Behavior:
 - Verifies inbound platform JWT auth via JWKS.
 - Validates strict `a2a_forward` envelope and `ops.audit` input schema.
 - Uses OpenAI Python SDK tool-calling loop (`responses.create`) for runtime decisions.
-- Uses MCP tools for context/route discovery:
-  - `get_task_context`
-  - `list_reachable_routes`
-  - `get_route_details`
-  - `delegate_task` (only when LLM decides and lineage depth allows)
+- Uses the full `aiv_*` governance MCP surface, with explicit route-first guardrails for `aiv_get_task_lineage`, `aiv_list_routes`, `aiv_get_route_details`, and `aiv_delegate_task`.
 - Validates strict `ops.audit` output schema before returning.
 - Acts as terminal specialist by default, with optional LLM-driven delegation.
 
@@ -32,7 +28,7 @@ This agent uses the same production-style lifecycle expected from external integ
    - payload validation
    - OpenAI Responses tool-calling loop
    - MCP route discovery/context lookup and optional delegation
-6. MCP wrapper (`app/mcp_client.py`) injects outbound auth headers for tool calls.
+6. MCP wrapper (`app/mcp_client.py`) injects outbound auth fields for tool calls and supports the full `aiv_*` governance MCP surface.
 7. Agent returns normalized `a2a_response` success/failure envelope.
 
 This keeps strict I/O contracts for platform testing while still allowing LLM-driven decisions.
@@ -44,7 +40,7 @@ If you only need endpoint + MCP connection guidance (without business validation
 - `app/integration_kit/types.py` - base `a2a_forward` shape check helper
 - `app/integration_kit/connection_endpoint.py` - minimal `/a2a` endpoint factory
 - `app/integration_kit/health_endpoint.py` - minimal `/health` payload builder
-- `app/integration_kit/mcp_toolkit.py` - thin wrappers for MCP tools and required inputs
+- `app/integration_kit/mcp_toolkit.py` - thin wrappers plus full `PLATFORM_MCP_TOOLS` catalog for exposed `aiv_*` tools
 - `app/integration_kit/__init__.py` - package exports
 
 ## Local setup
@@ -74,7 +70,7 @@ Default port: `3300`.
 
 Simple mode:
 - `AGENT_SECRET`
-- `AGENT_API_KEY`
+- optional `AGENT_API_KEY` legacy alias, but prefer `AGENT_SECRET` for all new deploys
 
 Advanced mode:
 - `PLATFORM_JWKS_URL`
@@ -90,6 +86,10 @@ Platform -> Agent (`/a2a`):
 Agent -> Platform/MCP:
 - simple mode: `Authorization` + `X-Agent-ID`
 - advanced mode: `X-Agent-ID` + `X-Timestamp` + `X-Signature-Algorithm` + `X-Signature`
+
+For governance MCP routing tools, the example client passes:
+- simple mode: `agent_secret` + `agent_did`
+- advanced mode: `agent_did` + `timestamp_header` + `signature_header` + optional `algorithm_header`
 
 Advanced signatures use canonical format:
 

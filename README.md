@@ -33,6 +33,21 @@ High-level flow:
 3. Your agent verifies JWT signature with platform JWKS and validates core claims (`iss`, `aud`, `exp/iat`, `task_id`).
 4. If verification fails, the agent returns a structured failed response and does not process the task.
 
+For the governance MCP routing flow, these examples now use:
+- `aiv_get_task_lineage`
+- `aiv_list_routes`
+- `aiv_get_route_details`
+- `aiv_delegate_task`
+
+The MCP stream transport remains outbound-authenticated. For MCP `#69` tool calls, the example clients now follow the same env-driven split as deployment:
+- simple mode: pass `agent_secret` + `agent_did`
+- advanced mode: pass `agent_did` + `timestamp_header` + `signature_header` + `algorithm_header`
+
+Each stack keeps one codebase and switches behavior using `AGENT_AUTH_MODE`.
+For simple mode, standardize on `AGENT_SECRET`; `AGENT_API_KEY` remains supported only as a legacy alias.
+
+The shared MCP wrapper in each example stack now supports the full `aiv_*` governance MCP surface, not only the route-delegation subset.
+
 ## Repository purpose
 
 This repo is both:
@@ -47,4 +62,3 @@ This repo is both:
    - `GET /health`
    - `POST /a2a`
 4. Deploy and register the public `/a2a` endpoint in the platform.
-

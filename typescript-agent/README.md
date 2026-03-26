@@ -48,10 +48,8 @@ This keeps behavior deterministic for platform E2E tests while still allowing LL
 - Outbound auth for MCP calls (same auth family as platform)
 - OpenAI Node SDK tool-calling loop (`responses.create`) for runtime decisions
 - MCP tools exposed to model:
-  - `get_task_context`
-  - `list_reachable_routes`
-  - `get_route_details`
-  - `delegate_task`
+  - full `aiv_*` governance MCP surface
+  - route-first delegation guardrails retained for `aiv_get_task_lineage`, `aiv_list_routes`, `aiv_get_route_details`, `aiv_delegate_task`
 - Model decides local completion vs delegation at runtime
 - Structured failure envelope with error code/message/retryable
 
@@ -64,7 +62,7 @@ This keeps behavior deterministic for platform E2E tests while still allowing LL
 - `src/validation/schemas.ts` - strict input/output schema validation
 - `src/auth/inboundAuth.ts` - simple/advanced inbound auth checks
 - `src/auth/outboundAuth.ts` - simple/advanced outbound headers/signing
-- `src/mcp/mcpClientHttp.ts` - MCP JSON-RPC transport + tool wrappers
+- `src/mcp/mcpClientHttp.ts` - MCP JSON-RPC transport + full `aiv_*` governance tool auth wrapper
 - `src/utils/signature.ts` - timing-safe HMAC verification
 
 ### Integration-kit (for FE/Docs instructions)
@@ -75,6 +73,7 @@ If you need only platform connection endpoint + health endpoint + MCP tool conne
 - `src/integration-kit/connectionEndpoint.ts` - minimal `/a2a` endpoint factory (no business schema validation)
 - `src/integration-kit/healthEndpoint.ts` - minimal `/health` payload builder
 - `src/integration-kit/mcpToolkit.ts` - thin wrappers for platform MCP tools and their required inputs
+- full `PLATFORM_MCP_TOOLS` catalog for all currently exposed `aiv_*` tools
 - `src/integration-kit/index.ts` - barrel exports
 
 This module is intentionally narrow and can be used as the base code in frontend instruction pages.
@@ -111,7 +110,7 @@ cp .env.example .env
 
 For `simple` mode:
 - `AGENT_SECRET`
-- `AGENT_API_KEY`
+- optional `AGENT_API_KEY` legacy alias, but prefer `AGENT_SECRET` for all new deploys
 
 For `advanced` mode:
 - `PLATFORM_JWKS_URL`
@@ -164,6 +163,10 @@ Agent -> Platform and MCP tools:
   - `X-Signature-Algorithm` (default `RS256`)
   - `X-Signature` (JWS over canonical string)
 
+For governance MCP routing tools, the example client passes:
+- simple mode: `agent_secret` + `agent_did`
+- advanced mode: `agent_did` + `timestamp_header` + `signature_header` + optional `algorithm_header`
+
 Advanced canonical format:
 
 ```text
@@ -215,5 +218,4 @@ curl http://localhost:3000/health
 ```
 
 Notes:
-- Use the exact raw JSON body when generating simple-mode HMAC signatures.
 - Keep timestamp fresh (5-minute validation window).
