@@ -1,19 +1,19 @@
-import {
-  getOpenAIClient,
-  getOpenAIMaxOutputTokens,
-  getOpenAIModel,
-} from "../openai/openaiClient.js";
-import {
-  mcpCallTool,
-} from "../mcp/mcpClientHttp.js";
-import { PLATFORM_MCP_TOOLS } from "../integration-kit/mcpToolkit.js";
+import { Agent, run } from "@openai/agents";
+import { z } from "zod";
+import { createGovernanceMcpServer } from "../openai/mcpServer.js";
+import { getOpenAIMaxOutputTokens, getOpenAIModel } from "../openai/openaiClient.js";
 import { AgentError } from "../utils/agentError.js";
 import {
   validateOpsCoordinateInput,
   validateOpsCoordinateOutput,
 } from "../validation/schemas.js";
 
-// Final response guard: never return output that violates declared contract.
+const opsCoordinateOutputSchema = z.object({
+  plan: z.string(),
+  actions: z.array(z.record(z.string(), z.unknown())),
+  score: z.number().optional(),
+});
+
 function ensureValidOutput(result) {
   const outputValidation = validateOpsCoordinateOutput(result);
   if (!outputValidation.ok) {
@@ -27,459 +27,9 @@ function ensureValidOutput(result) {
   return outputValidation.value;
 }
 
-const SUPPORTED_TOOL_NAMES = Object.values(PLATFORM_MCP_TOOLS);
-const TASK_SCOPED_TOOLS = new Set([
-  "aiv_get_task_lineage",
-  "aiv_list_routes",
-  "aiv_get_route_details",
-  "aiv_accept_task",
-  "aiv_complete_task",
-  "aiv_get_task_details",
-  "aiv_delegate_task",
-]);
-
-const GENERIC_TOOL_DESCRIPTIONS = {
-  aiv_identify: "Return current agent identity and governance registration details.",
-  aiv_check_action: "Check whether a planned action is allowed under governance rules before executing it.",
-  aiv_log_activity: "Write an auditable activity event for the current agent or task.",
-  aiv_heartbeat: "Send a heartbeat update so the platform knows this agent is active.",
-  aiv_compliance_rules: "Fetch compliance and governance rules relevant to this agent.",
-  aiv_poll_tasks: "Poll for inbound tasks that this agent can claim and work on.",
-  aiv_complete_task: "Complete the current task with result or error details when work is finished.",
-  aiv_discover_agents: "Search for available agents and their metadata.",
-  aiv_platform_stats: "Retrieve governance and platform-level status metrics.",
-  aiv_send_message: "Send a direct message to another agent using target_agent, intent, payload, and optional context.",
-  aiv_get_rate_limit_status: "Check current rate limit usage and remaining allowance for this agent.",
-  aiv_get_my_connections: "List this agent's active and pending connections.",
-  aiv_request_connection: "Request a new connection to another agent or capability.",
-  aiv_rotate_secret: "Rotate the current agent secret when operating in simple auth mode.",
-  aiv_get_task_details: "Fetch detailed state and metadata for the current task.",
-  aiv_get_my_metrics: "Get metrics and performance data for the current agent.",
-  aiv_update_my_metadata: "Update this agent's public metadata and descriptive fields.",
-  aiv_test_connection: "Test whether an agent connection is healthy and usable.",
-  aiv_get_compliance_evidence: "Retrieve evidence records for compliance checks or audit trails.",
-  aiv_store_data: "Store agent data or state in governance-managed storage.",
-  aiv_retrieve_data: "Retrieve previously stored governance-managed data by key or namespace.",
-  aiv_emergency_shutdown: "Trigger an emergency shutdown flow for this agent.",
-  aiv_get_my_activity: "List recent activity and audit events for the current agent.",
-  aiv_accept_task: "Claim an inbound task so this agent becomes the active worker.",
-};
-
-function createGenericToolDefinition(name) {
-  return {
-    type: "function",
-    name,
-    description: GENERIC_TOOL_DESCRIPTIONS[name] ?? `Call governance MCP tool ${name}.`,
-    parameters: {
-      type: "object",
-      properties: {},
-      additionalProperties: true,
-    },
-  };
-}
-
-// Tool contract presented to the model in Responses API tool-calling mode.
-const toolDefinitions = [
-  {
-    type: "function",
-    name: "aiv_get_task_lineage",
-    description: "Fetch lineage details for the current task id before delegation.",
-    parameters: {
-      type: "object",
-      required: [],
-      properties: {
-        max_parent_depth: { type: "number" },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "aiv_list_routes",
-    description: "List active routes this agent can use for delegation from current task.",
-    parameters: {
-      type: "object",
-      required: [],
-      properties: {
-        page: { type: "number" },
-        per_page: { type: "number" },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "aiv_get_route_details",
-    description: "Get details and schema expectations for a selected route.",
-    parameters: {
-      type: "object",
-      required: ["slug"],
-      properties: {
-        slug: { type: "string" },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "aiv_delegate_task",
-    description:
-      "Delegate to a target agent. Use only with discovered active routes and correct lineage context.",
-    parameters: {
-      type: "object",
-      required: [
-        "connection",
-        "target_agent_did",
-        "intent",
-        "payload",
-      ],
-      properties: {
-        connection: { type: "string" },
-        target_agent_did: { type: "string" },
-        intent: { type: "string" },
-        payload: { type: "object" },
-        context: { type: "object" },
-      },
-      additionalProperties: false,
-    },
-  },
-  ...SUPPORTED_TOOL_NAMES
-    .filter(
-      (name) =>
-        ![
-          "aiv_get_task_lineage",
-          "aiv_list_routes",
-          "aiv_get_route_details",
-          "aiv_delegate_task",
-        ].includes(name),
-    )
-    .map((name) => createGenericToolDefinition(name)),
-];
-
-// Model function arguments arrive as JSON strings.
-function parseJsonArgs(rawArgs) {
-  if (!rawArgs || typeof rawArgs !== "string") {
-    return {};
-  }
-  try {
-    return JSON.parse(rawArgs);
-  } catch {
-    throw new AgentError("EXECUTION_FAILED", "Model produced invalid tool arguments", true, 502);
-  }
-}
-
-function isPlainObject(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isUuid(value) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-    value,
-  );
-}
-
-// MCP stream may wrap JSON payloads into content[0].text strings.
-function parsePossibleJson(value) {
-  if (typeof value !== "string") {
-    return value;
-  }
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
-}
-
-function unwrapMcpResult(result) {
-  if (!isPlainObject(result) || !Array.isArray(result.content) || result.content.length === 0) {
-    return result;
-  }
-  const first = result.content[0];
-  if (!isPlainObject(first) || typeof first.text !== "string") {
-    return result;
-  }
-  return parsePossibleJson(first.text);
-}
-
-// Compatibility helper for varied route detail payloads.
-function extractConnectionId(routeDetailsRaw) {
-  const routeDetails = unwrapMcpResult(routeDetailsRaw);
-  if (!isPlainObject(routeDetails)) {
-    return null;
-  }
-  const topCandidates = [
-    routeDetails.connection,
-    routeDetails.connection_id,
-    routeDetails.id,
-  ];
-  for (const candidate of topCandidates) {
-    if (typeof candidate === "string" && isUuid(candidate)) {
-      return candidate;
-    }
-  }
-  if (isPlainObject(routeDetails.route)) {
-    const nested = [
-      routeDetails.route.connection,
-      routeDetails.route.connection_id,
-      routeDetails.route.id,
-    ];
-    for (const candidate of nested) {
-      if (typeof candidate === "string" && isUuid(candidate)) {
-        return candidate;
-      }
-    }
-  }
-  if (isPlainObject(routeDetails.payload)) {
-    const payloadCandidates = [
-      routeDetails.payload.connection,
-      routeDetails.payload.connection_id,
-      routeDetails.payload.id,
-    ];
-    for (const candidate of payloadCandidates) {
-      if (typeof candidate === "string" && isUuid(candidate)) {
-        return candidate;
-      }
-    }
-  }
-  return null;
-}
-
-// Reads target DID from top-level or nested route payloads.
-function extractTargetDid(routeDetailsRaw) {
-  const routeDetails = unwrapMcpResult(routeDetailsRaw);
-  if (!isPlainObject(routeDetails)) {
-    return null;
-  }
-  const candidates = [
-    routeDetails.target_agent_did,
-    isPlainObject(routeDetails.route) ? routeDetails.route.target_agent_did : undefined,
-    isPlainObject(routeDetails.payload) ? routeDetails.payload.target_agent_did : undefined,
-  ];
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.length > 0) {
-      return candidate;
-    }
-  }
-  return null;
-}
-
-// Reads selected intent input schema (if exposed by MCP route metadata).
-function extractIntentInputSchema(routeDetailsRaw, intent) {
-  const routeDetails = unwrapMcpResult(routeDetailsRaw);
-  if (!isPlainObject(routeDetails)) {
-    return null;
-  }
-
-  const schemaCandidates = [];
-  if (isPlainObject(routeDetails.input_schema)) {
-    schemaCandidates.push(routeDetails.input_schema);
-  }
-  if (isPlainObject(routeDetails.intent_input_schema)) {
-    schemaCandidates.push(routeDetails.intent_input_schema);
-  }
-  if (isPlainObject(routeDetails.schema) && isPlainObject(routeDetails.schema.input_schema)) {
-    schemaCandidates.push(routeDetails.schema.input_schema);
-  }
-
-  const intentsContainers = [];
-  if (Array.isArray(routeDetails.intents)) {
-    intentsContainers.push(routeDetails.intents);
-  }
-  if (isPlainObject(routeDetails.payload) && Array.isArray(routeDetails.payload.intents)) {
-    intentsContainers.push(routeDetails.payload.intents);
-  }
-  for (const container of intentsContainers) {
-    if (!Array.isArray(container)) {
-      continue;
-    }
-    const match = container.find(
-      (item) =>
-        isPlainObject(item) &&
-        ((typeof item.intent === "string" && item.intent === intent) ||
-          (typeof item.name === "string" && item.name === intent)),
-    );
-    if (isPlainObject(match)) {
-      if (isPlainObject(match.input_schema)) {
-        schemaCandidates.push(match.input_schema);
-      }
-      if (isPlainObject(match.schema) && isPlainObject(match.schema.input_schema)) {
-        schemaCandidates.push(match.schema.input_schema);
-      }
-    }
-  }
-
-  for (const candidate of schemaCandidates) {
-    if (isPlainObject(candidate)) {
-      return candidate;
-    }
-  }
-  return null;
-}
-
-// Reorders payload keys to schema order first, then preserves additional keys.
-function normalizePayloadBySchema(payload, inputSchema) {
-  if (!isPlainObject(inputSchema) || !isPlainObject(inputSchema.properties)) {
-    return payload;
-  }
-  const preferred = Object.keys(inputSchema.properties);
-  const normalized = {};
-  for (const key of preferred) {
-    if (Object.prototype.hasOwnProperty.call(payload, key)) {
-      normalized[key] = payload[key];
-    }
-  }
-  for (const [key, value] of Object.entries(payload)) {
-    if (!Object.prototype.hasOwnProperty.call(normalized, key)) {
-      normalized[key] = value;
-    }
-  }
-  return normalized;
-}
-
-function extractGenericTargetDid(args) {
-  const candidates = [args.target_agent, args.target_agent_did];
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.length > 0) {
-      return candidate;
-    }
-  }
-  return undefined;
-}
-
-// Policy boundary translating model tool calls into MCP calls with guardrails.
-async function runToolCall(call, requestTaskId) {
-  const args = parseJsonArgs(call.arguments);
-  switch (call.name) {
-    case "aiv_get_task_lineage":
-      return mcpCallTool(
-        "aiv_get_task_lineage",
-        {
-          task_id: requestTaskId,
-          ...(typeof args.max_parent_depth === "number"
-            ? { max_parent_depth: args.max_parent_depth }
-            : {}),
-        },
-      );
-    case "aiv_list_routes":
-      return mcpCallTool("aiv_list_routes", {
-        task_id: requestTaskId,
-        ...(typeof args.page === "number" ? { page: args.page } : {}),
-        ...(typeof args.per_page === "number" ? { per_page: args.per_page } : {}),
-      });
-    case "aiv_get_route_details": {
-      const slug =
-        typeof args.slug === "string"
-          ? args.slug
-          : typeof args.connection_slug === "string"
-            ? args.connection_slug
-            : null;
-      if (!slug) {
-        throw new AgentError(
-          "EXECUTION_FAILED",
-          "Model must provide route slug for aiv_get_route_details",
-          true,
-          502,
-        );
-      }
-      return mcpCallTool("aiv_get_route_details", {
-        task_id: requestTaskId,
-        slug,
-      });
-    }
-    case "aiv_delegate_task": {
-      const connection =
-        typeof args.connection === "string"
-          ? args.connection
-          : typeof args.connection_slug === "string"
-            ? args.connection_slug
-            : null;
-      let targetAgentDid = args.target_agent_did;
-      if (!connection || typeof targetAgentDid !== "string") {
-        throw new AgentError(
-          "EXECUTION_FAILED",
-          "Model must provide connection and target_agent_did for aiv_delegate_task",
-          true,
-          502,
-        );
-      }
-      let routeDetails = null;
-      // Runtime requires route slug, not connection UUID.
-      if (isUuid(connection)) {
-        return {
-          error: {
-            code: "TOOL_ARGUMENTS_INVALID",
-            message: "aiv_delegate_task requires route slug in connection field, not UUID",
-          },
-        };
-      }
-      routeDetails = await mcpCallTool("aiv_get_route_details", {
-        task_id: requestTaskId,
-        slug: connection,
-      });
-      targetAgentDid = extractTargetDid(routeDetails) ?? targetAgentDid;
-      if (!isPlainObject(args.payload)) {
-        if (!routeDetails && !isUuid(connection)) {
-          routeDetails = await mcpCallTool("aiv_get_route_details", {
-            task_id: requestTaskId,
-            slug: connection,
-          });
-        }
-        return {
-          error: {
-            code: "TOOL_ARGUMENTS_INVALID",
-            message:
-              "aiv_delegate_task requires payload as a JSON object matching selected route intent schema",
-          },
-          route_details: routeDetails,
-        };
-      }
-      return mcpCallTool(
-        "aiv_delegate_task",
-        {
-          task_id: requestTaskId,
-          connection,
-          target_agent: targetAgentDid,
-          intent: args.intent,
-          payload: args.payload,
-          // Keep empty object parity for downstream canonical hashing.
-          context: isPlainObject(args.context) ? args.context : {},
-        },
-        targetAgentDid,
-      );
-    }
-    default: {
-      if (!SUPPORTED_TOOL_NAMES.includes(call.name)) {
-        throw new AgentError("EXECUTION_FAILED", `Unsupported tool requested: ${call.name}`, false, 400);
-      }
-      const genericArgs = isPlainObject(args) ? { ...args } : {};
-      if (TASK_SCOPED_TOOLS.has(call.name) && typeof genericArgs.task_id !== "string") {
-        genericArgs.task_id = requestTaskId;
-      }
-      return mcpCallTool(call.name, genericArgs, extractGenericTargetDid(genericArgs));
-    }
-  }
-}
-
-/**
- * LLM orchestration loop:
- * - submits initial task context
- * - executes requested tools
- * - feeds tool outputs back until no function calls remain
- * - enforces JSON-only final response
- */
-async function decideWithLlm({ request, payload }) {
-  const model = getOpenAIModel();
-  const maxOutputTokens = getOpenAIMaxOutputTokens();
-  const initialPrompt = [
-    "You are Execution Task Coordinator.",
-    "You may use MCP tools to decide whether to delegate or complete locally.",
-    "Prefer the smallest necessary set of tools and avoid exploratory tool calls unless they are required to complete the task safely.",
-    "Use the route-first governance flow: aiv_get_task_lineage, aiv_list_routes, aiv_get_route_details, then aiv_delegate_task.",
-    "Do not hardcode targets; discover routes via tools and delegate only via active discovered route.",
-    "Depth guardrail: only delegate when context.depth < context.max_depth.",
-    "When finished, respond with JSON object only:",
-    "{ \"plan\": string, \"actions\": array, \"score\"?: number }",
-    "",
+function buildPrompt(request, payload) {
+  return [
+    "Current task context:",
     JSON.stringify(
       {
         task_id: request.task_id,
@@ -490,63 +40,45 @@ async function decideWithLlm({ request, payload }) {
       null,
       2,
     ),
+    "",
+    "Return only the structured output requested by the schema.",
   ].join("\n");
+}
 
-  const openai = getOpenAIClient();
-  let response = await openai.responses.create({
-    model,
-    input: initialPrompt,
-    tools: toolDefinitions,
-    max_output_tokens: maxOutputTokens,
-  });
-
-  for (let i = 0; i < 12; i += 1) {
-    // Hard cap prevents runaway loops.
-    const toolCalls = (response.output ?? []).filter(
-      (item) => item.type === "function_call",
-    );
-    if (toolCalls.length === 0) {
-      break;
-    }
-
-    const toolOutputs = [];
-    for (const call of toolCalls) {
-      let result;
-      try {
-        result = await runToolCall(call, request.task_id);
-      } catch (error) {
-        result = {
-          error: {
-            code: "TOOL_EXECUTION_FAILED",
-            message: error instanceof Error ? error.message : "Unknown tool execution error",
-          },
-        };
-      }
-      toolOutputs.push({
-        type: "function_call_output",
-        call_id: call.call_id,
-        output: JSON.stringify(result),
-      });
-    }
-
-    response = await openai.responses.create({
-      model,
-      previous_response_id: response.id,
-      input: toolOutputs,
-      tools: toolDefinitions,
-      max_output_tokens: maxOutputTokens,
-    });
-  }
+async function decideWithLlm({ request, payload }) {
+  const mcpServer = createGovernanceMcpServer();
+  await mcpServer.connect();
 
   try {
-    return JSON.parse(response.output_text);
-  } catch {
-    throw new AgentError("EXECUTION_FAILED", "LLM final output was not valid JSON", true, 502);
+    const agent = new Agent({
+      name: "Execution Task Coordinator",
+      instructions: [
+        "You are Execution Task Coordinator.",
+        "You may use the connected governance MCP server to decide whether to delegate or complete locally.",
+        "Prefer the smallest necessary set of tools and avoid exploratory tool calls unless they are required to complete the task safely.",
+        "Use the route-first governance flow: aiv_get_task_lineage, aiv_list_routes, aiv_get_route_details, then aiv_delegate_task.",
+        "Do not hardcode targets; discover routes via MCP tools and delegate only via active discovered route.",
+        "Depth guardrail: only delegate when context.depth < context.max_depth.",
+      ].join("\n"),
+      model: getOpenAIModel(),
+      modelSettings: {
+        maxTokens: getOpenAIMaxOutputTokens(),
+      },
+      mcpServers: [mcpServer],
+      outputType: opsCoordinateOutputSchema,
+    });
+
+    const result = await run(agent, buildPrompt(request, payload));
+    if (!result.finalOutput) {
+      throw new AgentError("EXECUTION_FAILED", "LLM run returned no structured output", true, 502);
+    }
+    return result.finalOutput;
+  } finally {
+    await mcpServer.close();
   }
 }
 
 export async function runOpsCoordinate(request) {
-  // 1) Strict input validation guards business logic from malformed payloads.
   const inputValidation = validateOpsCoordinateInput(request.payload);
   if (!inputValidation.ok) {
     throw new AgentError(
@@ -558,16 +90,12 @@ export async function runOpsCoordinate(request) {
   }
 
   const payload = inputValidation.value;
-  const llmResult = await decideWithLlm({
-    request,
-    payload,
-  });
+  const llmResult = await decideWithLlm({ request, payload });
 
   const result = {
     plan: llmResult.plan,
     actions: llmResult.actions,
     ...(typeof llmResult.score === "number" ? { score: llmResult.score } : {}),
   };
-  
   return ensureValidOutput(result);
 }

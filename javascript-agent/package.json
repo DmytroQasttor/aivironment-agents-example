@@ -11,12 +11,14 @@
   "author": "Dmytro Qasttor <dmytro@qasttor.com>",
   "license": "ISC",
   "dependencies": {
+    "@openai/agents": "^0.8.1",
     "ajv": "^8.18.0",
     "ajv-formats": "^3.0.1",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "jose": "^6.1.3",
-    "openai": "^6.22.0"
+    "openai": "^6.22.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"

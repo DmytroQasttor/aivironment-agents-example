@@ -1,5 +1,5 @@
-import { buildOutboundAuthHeaders } from "../auth/outboundAuth";
 import { AgentError } from "../utils/agentError";
+import { buildMcpAuthorizationHeader } from "./mcpAuthHeader";
 
 let nextId = 1;
 let sessionId: string | null = null;
@@ -24,23 +24,6 @@ interface ToolAuthSpec {
 }
 
 type ToolAuthResolver = (toolArgs: Record<string, unknown>) => ToolAuthSpec | null;
-
-function getAuthMode() {
-  return (process.env.AGENT_AUTH_MODE ?? "simple").toLowerCase();
-}
-
-function getAgentSecretForMcpTools() {
-  const agentSecret = process.env.AGENT_SECRET ?? process.env.AGENT_API_KEY;
-  if (!agentSecret) {
-    throw new AgentError(
-      "CONFIG_INVALID",
-      "AGENT_SECRET or AGENT_API_KEY is required for simple governance MCP auth",
-      false,
-      500,
-    );
-  }
-  return agentSecret;
-}
 
 // MCP stream endpoint configured by deploy/dev environment.
 function getMcpUrl() {
@@ -109,18 +92,6 @@ function sortKeysDeep(value: unknown): unknown {
 // Canonical JSON serializer used for advanced-signature body hash parity.
 function canonicalJson(value: unknown) {
   return JSON.stringify(sortKeysDeep(value));
-}
-
-function stripGovernanceAuthFields(toolArgs: Record<string, unknown>) {
-  const {
-    agent_secret: _agentSecret,
-    agent_did: _agentDid,
-    timestamp_header: _timestampHeader,
-    signature_header: _signatureHeader,
-    algorithm_header: _algorithmHeader,
-    ...businessArgs
-  } = toolArgs;
-  return businessArgs;
 }
 
 const STATIC_TOOL_AUTH_SPECS: Record<string, ToolAuthSpec> = {
@@ -217,27 +188,6 @@ const DYNAMIC_TOOL_AUTH_SPECS: Record<string, ToolAuthResolver> = {
   },
 };
 
-function withGovernanceToolIdentity(params: unknown): unknown {
-  if (!isRecord(params) || !isRecord(params.arguments)) {
-    return params;
-  }
-  const name = params.name;
-  if (typeof name !== "string" || !name.startsWith("aiv_")) {
-    return params;
-  }
-
-  return {
-    ...params,
-    arguments: {
-      ...params.arguments,
-      agent_did: process.env.AGENT_DID,
-      ...(getAuthMode() === "simple"
-        ? { agent_secret: getAgentSecretForMcpTools() }
-        : {}),
-    },
-  };
-}
-
 /**
  * Maps each MCP tool call to the platform auth canonical target:
  * method + path + body + optional target DID.
@@ -267,46 +217,11 @@ function resolveToolAuthSpec(params: unknown): ToolAuthSpec | null {
     return {
       method: "POST",
       path: `mcp/${name}`,
-      body: canonicalJson(stripGovernanceAuthFields(toolArgs)),
+      body: canonicalJson(toolArgs),
     };
   }
 
   return null;
-}
-
-// Injects auth fields expected by the governance MCP tool contract.
-async function withToolAuthArguments(params: unknown): Promise<unknown> {
-  const withIdentity = withGovernanceToolIdentity(params);
-  if (!isRecord(withIdentity) || !isRecord(withIdentity.arguments)) {
-    return withIdentity;
-  }
-  const spec = resolveToolAuthSpec(withIdentity);
-  if (!spec) {
-    return withIdentity;
-  }
-
-  const authHeaders = await buildOutboundAuthHeaders({
-    method: spec.method,
-    path: spec.path,
-    body: spec.body,
-    targetAgentDid: spec.targetAgentDid,
-  });
-
-  return {
-    ...withIdentity,
-    arguments: {
-      ...withIdentity.arguments,
-      ...(typeof authHeaders["X-Timestamp"] === "string"
-        ? { timestamp_header: authHeaders["X-Timestamp"] }
-        : {}),
-      ...(typeof authHeaders["X-Signature"] === "string"
-        ? { signature_header: authHeaders["X-Signature"] }
-        : {}),
-      ...(typeof authHeaders["X-Signature-Algorithm"] === "string"
-        ? { algorithm_header: authHeaders["X-Signature-Algorithm"] }
-        : {}),
-    },
-  };
 }
 
 // Sends one JSON-RPC call over MCP stream transport.
@@ -314,8 +229,7 @@ async function postRpc(method: string, params: unknown, targetAgentDid?: string)
   const mcpUrl = getMcpUrl();
   const requestId = nextId++;
 
-  const resolvedParams =
-    method === "tools/call" ? await withToolAuthArguments(params) : params;
+  const resolvedParams = params;
   const body = JSON.stringify({
     jsonrpc: "2.0",
     method,
@@ -323,17 +237,21 @@ async function postRpc(method: string, params: unknown, targetAgentDid?: string)
     id: requestId,
   });
 
-  const transportAuthHeaders = await buildOutboundAuthHeaders({
-    method: "POST",
-    path: mcpUrl.pathname,
-    body,
-    targetAgentDid,
-  });
+  const authSpec =
+    method === "tools/call" ? resolveToolAuthSpec(params) : null;
+  const authorizationHeader = await buildMcpAuthorizationHeader(
+    authSpec ?? {
+      method: "POST",
+      path: mcpUrl.pathname,
+      body,
+      targetAgentDid,
+    },
+  );
 
   const headers: Record<string, string> = {
     Accept: "application/json, text/event-stream",
     "Content-Type": "application/json",
-    ...transportAuthHeaders,
+    Authorization: authorizationHeader,
   };
   if (sessionId) {
     headers["mcp-session-id"] = sessionId;
