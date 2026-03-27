@@ -77,9 +77,25 @@ def _build_prompt(task: dict, payload: dict) -> str:
     )
 
 
+def _mcp_debug_enabled() -> bool:
+    value = os.getenv("MCP_DEBUG", "")
+    return value in ("1", "true", "TRUE", "True")
+
+
+def _log_mcp_debug(message: str, data: dict | None = None) -> None:
+    if not _mcp_debug_enabled():
+        return
+    if data is None:
+        print("[mcp-debug]", message)
+        return
+    print("[mcp-debug]", message, json.dumps(data, ensure_ascii=False))
+
+
 async def _decide_with_llm(task: dict, payload: dict) -> OpsAuditOutput:
     mcp_server = create_governance_mcp_server()
+    _log_mcp_debug("connecting mcp server")
     async with mcp_server:
+        _log_mcp_debug("mcp server connected")
         agent = Agent(
             name="Compliance Risk Auditor",
             instructions="\n".join(
@@ -98,7 +114,19 @@ async def _decide_with_llm(task: dict, payload: dict) -> OpsAuditOutput:
             output_type=OpsAuditOutput,
         )
 
-        result = await Runner.run(agent, _build_prompt(task, payload))
+        try:
+            _log_mcp_debug(
+                "starting agent run",
+                {"task_id": task["task_id"], "intent": task["intent"]},
+            )
+            result = await Runner.run(agent, _build_prompt(task, payload))
+            _log_mcp_debug(
+                "agent run finished",
+                {"has_final_output": result.final_output is not None},
+            )
+        except Exception as exc:
+            _log_mcp_debug("agent run failed", {"error": str(exc)})
+            raise
         final_output = result.final_output_as(OpsAuditOutput, raise_if_incorrect_type=True)
         if final_output is None:
             raise AgentError(

@@ -15,6 +15,21 @@ type RpcToolCallParams = {
   arguments?: unknown;
 };
 
+function isMcpDebugEnabled() {
+  return process.env.MCP_DEBUG === "1" || process.env.MCP_DEBUG === "true";
+}
+
+function logMcpDebug(message: string, data?: Record<string, unknown>) {
+  if (!isMcpDebugEnabled()) {
+    return;
+  }
+  if (data) {
+    console.log("[mcp-debug]", message, JSON.stringify(data));
+    return;
+  }
+  console.log("[mcp-debug]", message);
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -164,9 +179,23 @@ async function resolveAuthSpec(input: FetchInput, init?: RequestInit): Promise<T
 
   try {
     const parsed = JSON.parse(body) as { method?: unknown; params?: unknown };
+    if (typeof parsed?.method === "string") {
+      const paramsObject = isPlainObject(parsed.params) ? parsed.params : undefined;
+      const toolName =
+        parsed.method === "tools/call" && typeof paramsObject?.name === "string" ? paramsObject.name : undefined;
+      logMcpDebug("outgoing rpc request", {
+        rpc_method: parsed.method,
+        tool_name: toolName,
+      });
+    }
     if (parsed?.method === "tools/call" && isPlainObject(parsed.params)) {
       const resolved = resolveToolAuthSpec(parsed.params as RpcToolCallParams);
       if (resolved) {
+        logMcpDebug("resolved logical auth spec", {
+          method: resolved.method,
+          path: resolved.path,
+          target_agent_did: resolved.targetAgentDid ?? null,
+        });
         return resolved;
       }
     }
@@ -194,6 +223,17 @@ export function createGovernanceMcpFetch(): typeof fetch {
       ...init,
       headers: mergeHeaders(input, init, authorization),
     };
-    return fetch(input, finalInit);
+    logMcpDebug("sending request", {
+      method: authSpec.method,
+      path: authSpec.path,
+      auth_header_present: true,
+      auth_header_prefix: authorization.slice(0, 16),
+    });
+    const response = await fetch(input, finalInit);
+    logMcpDebug("received response", {
+      status: response.status,
+      ok: response.ok,
+    });
+    return response;
   };
 }

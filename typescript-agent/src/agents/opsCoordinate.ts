@@ -49,12 +49,29 @@ function buildPrompt(request: A2AForwardRequest, payload: OpsCoordinatePayload) 
   ].join("\n");
 }
 
+function isMcpDebugEnabled() {
+  return process.env.MCP_DEBUG === "1" || process.env.MCP_DEBUG === "true";
+}
+
+function logMcpDebug(message: string, data?: Record<string, unknown>) {
+  if (!isMcpDebugEnabled()) {
+    return;
+  }
+  if (data) {
+    console.log("[mcp-debug]", message, JSON.stringify(data));
+    return;
+  }
+  console.log("[mcp-debug]", message);
+}
+
 async function decideWithLlm(params: {
   request: A2AForwardRequest;
   payload: OpsCoordinatePayload;
 }) {
   const mcpServer = createGovernanceMcpServer();
+  logMcpDebug("connecting mcp server");
   await mcpServer.connect();
+  logMcpDebug("mcp server connected");
 
   try {
     const agent = new Agent({
@@ -79,13 +96,26 @@ async function decideWithLlm(params: {
       outputType: opsCoordinateOutputSchema,
     });
 
+    logMcpDebug("starting agent run", {
+      task_id: params.request.task_id,
+      intent: params.request.intent,
+    });
     const result = await run(agent, buildPrompt(params.request, params.payload));
+    logMcpDebug("agent run finished", {
+      has_final_output: !!result.finalOutput,
+    });
     if (!result.finalOutput) {
       throw new AgentError("EXECUTION_FAILED", "LLM run returned no structured output", true, 502);
     }
     return result.finalOutput;
+  } catch (error) {
+    logMcpDebug("agent run failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
   } finally {
     await mcpServer.close();
+    logMcpDebug("mcp server closed");
   }
 }
 

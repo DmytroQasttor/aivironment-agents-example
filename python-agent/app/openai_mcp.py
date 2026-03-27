@@ -9,6 +9,20 @@ from app.errors import AgentError
 from app.mcp_auth_header import build_mcp_authorization_header
 
 
+def _mcp_debug_enabled() -> bool:
+    value = os.getenv("MCP_DEBUG", "")
+    return value in ("1", "true", "TRUE", "True")
+
+
+def _log_mcp_debug(message: str, data: dict[str, Any] | None = None) -> None:
+    if not _mcp_debug_enabled():
+        return
+    if data is None:
+        print("[mcp-debug]", message)
+        return
+    print("[mcp-debug]", message, json.dumps(data, ensure_ascii=False))
+
+
 def _is_plain_object(value: Any) -> bool:
     return isinstance(value, dict)
 
@@ -102,8 +116,23 @@ def _resolve_request_auth_spec(request: httpx.Request) -> dict[str, Any]:
 
 class GovernanceMcpAuth(httpx.Auth):
     def auth_flow(self, request: httpx.Request):
-        request.headers["Authorization"] = build_mcp_authorization_header(
-            _resolve_request_auth_spec(request)
+        auth_spec = _resolve_request_auth_spec(request)
+        _log_mcp_debug(
+            "sending request",
+            {
+                "method": auth_spec.get("method"),
+                "path": auth_spec.get("path"),
+                "target_agent_did": auth_spec.get("target_agent_did"),
+            },
+        )
+        authorization = build_mcp_authorization_header(auth_spec)
+        request.headers["Authorization"] = authorization
+        _log_mcp_debug(
+            "auth header attached",
+            {
+                "auth_header_present": True,
+                "auth_header_prefix": authorization[:16],
+            },
         )
         yield request
 

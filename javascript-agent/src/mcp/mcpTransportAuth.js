@@ -1,5 +1,20 @@
 import { buildMcpAuthorizationHeader } from "./mcpAuthHeader.js";
 
+function isMcpDebugEnabled() {
+  return process.env.MCP_DEBUG === "1" || process.env.MCP_DEBUG === "true";
+}
+
+function logMcpDebug(message, data) {
+  if (!isMcpDebugEnabled()) {
+    return;
+  }
+  if (data) {
+    console.log("[mcp-debug]", message, JSON.stringify(data));
+    return;
+  }
+  console.log("[mcp-debug]", message);
+}
+
 function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -147,9 +162,23 @@ async function resolveAuthSpec(input, init) {
 
   try {
     const parsed = JSON.parse(body);
+    if (typeof parsed?.method === "string") {
+      const paramsObject = isPlainObject(parsed.params) ? parsed.params : undefined;
+      const toolName =
+        parsed.method === "tools/call" && typeof paramsObject?.name === "string" ? paramsObject.name : undefined;
+      logMcpDebug("outgoing rpc request", {
+        rpc_method: parsed.method,
+        tool_name: toolName,
+      });
+    }
     if (parsed?.method === "tools/call" && isPlainObject(parsed.params)) {
       const resolved = resolveToolAuthSpec(parsed.params);
       if (resolved) {
+        logMcpDebug("resolved logical auth spec", {
+          method: resolved.method,
+          path: resolved.path,
+          target_agent_did: resolved.targetAgentDid ?? null,
+        });
         return resolved;
       }
     }
@@ -173,9 +202,20 @@ export function createGovernanceMcpFetch() {
       body: authSpec.body,
       targetAgentDid: authSpec.targetAgentDid,
     });
-    return fetch(input, {
+    logMcpDebug("sending request", {
+      method: authSpec.method,
+      path: authSpec.path,
+      auth_header_present: true,
+      auth_header_prefix: authorization.slice(0, 16),
+    });
+    const response = await fetch(input, {
       ...init,
       headers: mergeHeaders(input, init, authorization),
     });
+    logMcpDebug("received response", {
+      status: response.status,
+      ok: response.ok,
+    });
+    return response;
   };
 }
