@@ -11,7 +11,7 @@ import {
 const opsCoordinateOutputSchema = z.object({
   plan: z.string(),
   actions: z.array(z.record(z.string(), z.unknown())),
-  score: z.number().optional(),
+  score: z.number().nullable(),
 });
 
 function ensureValidOutput(result) {

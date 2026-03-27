@@ -4,7 +4,7 @@ from typing import Literal
 
 from agents import Agent, Runner
 from agents.model_settings import ModelSettings
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.errors import AgentError
 from app.openai_mcp import create_governance_mcp_server
@@ -15,7 +15,7 @@ class OpsAuditOutput(BaseModel):
     findings: str
     severity: Literal["low", "medium", "high", "critical"]
     recommendations: list[str]
-    controls_passed: int | None = None
+    controls_passed: int | None = Field(...)
 
 
 def _get_model() -> str:
