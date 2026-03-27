@@ -10,7 +10,12 @@ import {
 
 const opsCoordinateOutputSchema = z.object({
   plan: z.string(),
-  actions: z.array(z.record(z.string(), z.unknown())),
+  actions: z.array(
+    z.object({
+      action: z.string(),
+      details: z.string().nullable(),
+    }),
+  ),
   score: z.number().nullable(),
 });
 
@@ -42,6 +47,7 @@ function buildPrompt(request, payload) {
     ),
     "",
     "Return only the structured output requested by the schema.",
+    "Each item in actions must be an object with required field `action` and nullable field `details`.",
   ].join("\n");
 }
 
