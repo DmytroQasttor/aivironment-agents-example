@@ -66,6 +66,8 @@ async function decideWithLlm(params: {
         "Use the route-first governance flow: aiv_get_task_lineage, aiv_list_routes, aiv_get_route_details, then aiv_delegate_task.",
         "Do not hardcode targets; discover routes via MCP tools and delegate only via active discovered route.",
         "Depth guardrail: only delegate when context.depth < context.max_depth.",
+        "If the task asks for compliance, audit, risk review, or recommendations and a valid downstream route exists for that work, you must delegate instead of completing everything locally.",
+        "Only keep the work local when no valid route exists, delegation depth is exhausted, or the downstream route explicitly does not allow the needed intent.",
       ].join("\n"),
       model: getOpenAIModel(),
       modelSettings: {
