@@ -39,7 +39,6 @@ If you only need endpoint + MCP connection guidance (without business validation
 - `src/integration-kit/types.js` - base `a2a_forward` shape check helper
 - `src/integration-kit/connectionEndpoint.js` - minimal `/a2a` endpoint factory
 - `src/integration-kit/healthEndpoint.js` - minimal `/health` payload builder
-- `src/integration-kit/mcpToolkit.js` - legacy helper wrappers retained for compatibility/reference
 - `src/integration-kit/index.js` - barrel exports
 
 ## Run

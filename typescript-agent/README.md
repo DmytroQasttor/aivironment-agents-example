@@ -72,7 +72,6 @@ If you need only platform connection endpoint + health endpoint + MCP tool conne
 - `src/integration-kit/types.ts` - minimal `a2a_forward` and `a2a_response` types
 - `src/integration-kit/connectionEndpoint.ts` - minimal `/a2a` endpoint factory (no business schema validation)
 - `src/integration-kit/healthEndpoint.ts` - minimal `/health` payload builder
-- `src/integration-kit/mcpToolkit.ts` - legacy helper wrappers retained for compatibility/reference
 - `src/integration-kit/index.ts` - barrel exports
 
 This module is intentionally narrow and can be used as the base code in frontend instruction pages.
