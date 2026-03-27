@@ -6,25 +6,13 @@ from urllib.parse import urlparse
 
 import httpx
 
-from app.auth.outbound_auth import build_outbound_auth_headers
 from app.config import require_env
 from app.errors import AgentError
+from app.mcp_auth_header import build_mcp_authorization_header
 
 _rpc_ids = count(1)
 _session_id: str | None = None
 _initialized = False
-
-
-def _get_agent_secret_for_mcp_tools() -> str:
-    agent_secret = os.getenv("AGENT_SECRET") or os.getenv("AGENT_API_KEY")
-    if not isinstance(agent_secret, str) or not agent_secret:
-        raise AgentError(
-            "CONFIG_INVALID",
-            "AGENT_SECRET or AGENT_API_KEY is required for simple governance MCP auth",
-            False,
-            500,
-        )
-    return agent_secret
 
 
 def _parse_sse_json_frames(raw_text: str) -> list[dict[str, Any]]:
@@ -44,21 +32,6 @@ def _parse_sse_json_frames(raw_text: str) -> list[dict[str, Any]]:
         if isinstance(parsed, dict):
             responses.append(parsed)
     return responses
-
-
-def _strip_governance_auth_fields(tool_args: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in tool_args.items()
-        if key
-        not in {
-            "agent_secret",
-            "agent_did",
-            "timestamp_header",
-            "signature_header",
-            "algorithm_header",
-        }
-    }
 
 
 def _pick_rpc_response(responses: list[dict[str, Any]], request_id: int) -> dict[str, Any] | None:
@@ -172,71 +145,13 @@ def _resolve_tool_auth_spec(params: dict[str, Any]) -> dict[str, Any] | None:
             "method": "POST",
             "path": f"mcp/{name}",
             "body": json.dumps(
-                _strip_governance_auth_fields(tool_args),
+                tool_args,
                 sort_keys=True,
                 separators=(",", ":"),
                 ensure_ascii=False,
             ),
         }
     return None
-
-
-def _with_governance_tool_identity(params: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(params.get("arguments"), dict):
-        return params
-    name = params.get("name")
-    if not isinstance(name, str) or not name.startswith("aiv_"):
-        return params
-    return {
-        **params,
-        "arguments": {
-            **params["arguments"],
-            "agent_did": require_env("AGENT_DID", "AGENT_DID is required"),
-            **(
-                {"agent_secret": _get_agent_secret_for_mcp_tools()}
-                if os.getenv("AGENT_AUTH_MODE", "simple").lower() == "simple"
-                else {}
-            ),
-        },
-    }
-
-
-def _with_tool_auth_arguments(params: dict[str, Any]) -> dict[str, Any]:
-    """Inject auth fields expected by the governance MCP tool contract."""
-    with_identity = _with_governance_tool_identity(params)
-    if not isinstance(with_identity.get("arguments"), dict):
-        return with_identity
-    spec = _resolve_tool_auth_spec(with_identity)
-    if not spec:
-        return with_identity
-
-    auth_headers = build_outbound_auth_headers(
-        method=spec["method"],
-        path=spec["path"],
-        body=spec["body"],
-        target_agent_did=spec.get("target_agent_did"),
-    )
-    return {
-        **with_identity,
-        "arguments": {
-            **with_identity["arguments"],
-            **(
-                {"timestamp_header": auth_headers["X-Timestamp"]}
-                if isinstance(auth_headers.get("X-Timestamp"), str)
-                else {}
-            ),
-            **(
-                {"signature_header": auth_headers["X-Signature"]}
-                if isinstance(auth_headers.get("X-Signature"), str)
-                else {}
-            ),
-            **(
-                {"algorithm_header": auth_headers["X-Signature-Algorithm"]}
-                if isinstance(auth_headers.get("X-Signature-Algorithm"), str)
-                else {}
-            ),
-        },
-    }
 
 
 def _post_rpc(
@@ -247,21 +162,26 @@ def _post_rpc(
 
     mcp_url = require_env("MCP_HTTP_URL", "MCP_HTTP_URL is required")
     request_id = next(_rpc_ids)
-    resolved_params: dict[str, Any] = (
-        _with_tool_auth_arguments(params) if method == "tools/call" else params
-    )
+    resolved_params: dict[str, Any] = params
     body = json.dumps(
         {"jsonrpc": "2.0", "method": method, "params": resolved_params, "id": request_id}
     )
+    auth_spec = _resolve_tool_auth_spec(params) if method == "tools/call" else None
     path = urlparse(mcp_url).path or "/"
-    auth_headers = build_outbound_auth_headers(
-        method="POST", path=path, body=body, target_agent_did=target_agent_did
+    authorization_header = build_mcp_authorization_header(
+        auth_spec
+        or {
+            "method": "POST",
+            "path": path,
+            "body": body,
+            "target_agent_did": target_agent_did,
+        }
     )
 
     headers: dict[str, str] = {
         "Accept": "application/json, text/event-stream",
         "Content-Type": "application/json",
-        **auth_headers,
+        "Authorization": authorization_header,
     }
     if _session_id:
         headers["mcp-session-id"] = _session_id

@@ -87,7 +87,7 @@ async def a2a_handler(request: Request) -> JSONResponse:
             depth=depth,
         )
 
-        result = run_agent(task)
+        result = await run_agent(task)
         return JSONResponse(build_a2a_success(task["task_id"], result))
     except Exception as err:
         # Normalize unknown exceptions into retryable execution errors.

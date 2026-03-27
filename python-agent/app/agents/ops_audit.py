@@ -1,34 +1,31 @@
 import json
 import os
-from typing import Any
+from typing import Literal
 
-from openai import OpenAI
+from agents import Agent, Runner
+from agents.model_settings import ModelSettings
+from pydantic import BaseModel
 
-from app.config import require_env
 from app.errors import AgentError
-from app.integration_kit.mcp_toolkit import PLATFORM_MCP_TOOLS
-from app.mcp_client import mcp_call_tool
+from app.openai_mcp import create_governance_mcp_server
 from app.validation import validate_ops_audit_input, validate_ops_audit_output
 
-_openai_client: OpenAI | None = None
 
-
-def _get_openai_client() -> OpenAI:
-    """Lazily initialize and reuse OpenAI client."""
-    global _openai_client
-    if _openai_client is None:
-        api_key = require_env("OPENAI_API_KEY", "OPENAI_API_KEY is required")
-        _openai_client = OpenAI(api_key=api_key)
-    return _openai_client
+class OpsAuditOutput(BaseModel):
+    findings: str
+    severity: Literal["low", "medium", "high", "critical"]
+    recommendations: list[str]
+    controls_passed: int | None = None
 
 
 def _get_model() -> str:
-    """Resolve required model name for Responses API."""
-    return require_env("OPENAI_MODEL", "OPENAI_MODEL is required")
+    model = os.getenv("OPENAI_MODEL")
+    if not isinstance(model, str) or not model:
+        raise AgentError("CONFIG_INVALID", "OPENAI_MODEL is required", False, 500)
+    return model
 
 
 def _get_max_output_tokens() -> int:
-    """Read optional max output token ceiling (default 1200)."""
     raw = os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "1200")
     try:
         parsed = int(raw)
@@ -49,171 +46,7 @@ def _get_max_output_tokens() -> int:
     return parsed
 
 
-def _parse_json(text: str, error_message: str) -> dict[str, Any]:
-    """Strict JSON parser used for model/tool outputs."""
-    try:
-        return json.loads(text)
-    except Exception:
-        raise AgentError("EXECUTION_FAILED", error_message, True, 502)
-
-
-def _is_plain_object(value: Any) -> bool:
-    return isinstance(value, dict)
-
-
-
-def _is_uuid(value: str) -> bool:
-    import re
-
-    return (
-        isinstance(value, str)
-        and re.match(
-            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-            value,
-            re.IGNORECASE,
-        )
-        is not None
-    )
-
-
-def _parse_possible_json(value: Any) -> Any:
-    """Best-effort parse for MCP text payloads that may contain serialized JSON."""
-    if not isinstance(value, str):
-        return value
-    try:
-        return json.loads(value)
-    except Exception:
-        return value
-
-
-def _unwrap_mcp_result(value: Any) -> Any:
-    """Unwrap Xano MCP `content[0].text` shape when present."""
-    if not isinstance(value, dict):
-        return value
-    content = value.get("content")
-    if not isinstance(content, list) or len(content) == 0:
-        return value
-    first = content[0]
-    if not isinstance(first, dict) or not isinstance(first.get("text"), str):
-        return value
-    return _parse_possible_json(first.get("text"))
-
-
-def _extract_connection_id(route_details_raw: Any) -> str | None:
-    """Compatibility extractor for route connection UUID variants."""
-    route_details = _unwrap_mcp_result(route_details_raw)
-    if not isinstance(route_details, dict):
-        return None
-    for key in ("connection", "connection_id", "id"):
-        candidate = route_details.get(key)
-        if isinstance(candidate, str) and _is_uuid(candidate):
-            return candidate
-    nested = route_details.get("route")
-    if isinstance(nested, dict):
-        for key in ("connection", "connection_id", "id"):
-            candidate = nested.get(key)
-            if isinstance(candidate, str) and _is_uuid(candidate):
-                return candidate
-    payload = route_details.get("payload")
-    if isinstance(payload, dict):
-        for key in ("connection", "connection_id", "id"):
-            candidate = payload.get(key)
-            if isinstance(candidate, str) and _is_uuid(candidate):
-                return candidate
-    return None
-
-
-def _extract_target_did(route_details_raw: Any) -> str | None:
-    """Extract target agent DID from top-level or nested route metadata."""
-    route_details = _unwrap_mcp_result(route_details_raw)
-    if not isinstance(route_details, dict):
-        return None
-    candidates = [
-        route_details.get("target_agent_did"),
-        (
-            route_details.get("route", {}).get("target_agent_did")
-            if isinstance(route_details.get("route"), dict)
-            else None
-        ),
-        (
-            route_details.get("payload", {}).get("target_agent_did")
-            if isinstance(route_details.get("payload"), dict)
-            else None
-        ),
-    ]
-    for candidate in candidates:
-        if isinstance(candidate, str) and len(candidate) > 0:
-            return candidate
-    return None
-
-
-def _extract_intent_input_schema(route_details_raw: Any, intent: str) -> dict[str, Any] | None:
-    """Extract input schema for selected intent from route metadata."""
-    route_details = _unwrap_mcp_result(route_details_raw)
-    if not isinstance(route_details, dict):
-        return None
-
-    schema_candidates: list[Any] = []
-    for candidate in (
-        route_details.get("input_schema"),
-        route_details.get("intent_input_schema"),
-        (
-            route_details.get("schema", {}).get("input_schema")
-            if isinstance(route_details.get("schema"), dict)
-            else None
-        ),
-    ):
-        if isinstance(candidate, dict):
-            schema_candidates.append(candidate)
-
-    intents_containers: list[Any] = []
-    if isinstance(route_details.get("intents"), list):
-        intents_containers.append(route_details.get("intents"))
-    payload = route_details.get("payload")
-    if isinstance(payload, dict) and isinstance(payload.get("intents"), list):
-        intents_containers.append(payload.get("intents"))
-
-    for container in intents_containers:
-        if not isinstance(container, list):
-            continue
-        for item in container:
-            if not isinstance(item, dict):
-                continue
-            if item.get("intent") == intent or item.get("name") == intent:
-                if isinstance(item.get("input_schema"), dict):
-                    schema_candidates.append(item.get("input_schema"))
-                schema = item.get("schema")
-                if isinstance(schema, dict) and isinstance(schema.get("input_schema"), dict):
-                    schema_candidates.append(schema.get("input_schema"))
-
-    for candidate in schema_candidates:
-        if isinstance(candidate, dict):
-            return candidate
-    return None
-
-
-def _normalize_payload_by_schema(
-    payload: dict[str, Any], input_schema: dict[str, Any] | None
-) -> dict[str, Any]:
-    """Order payload keys by schema properties first for predictable serialization."""
-    if not isinstance(input_schema, dict):
-        return payload
-    properties = input_schema.get("properties")
-    if not isinstance(properties, dict):
-        return payload
-
-    normalized: dict[str, Any] = {}
-    for key in properties.keys():
-        if key in payload:
-            normalized[key] = payload[key]
-    for key, value in payload.items():
-        if key not in normalized:
-            normalized[key] = value
-    return normalized
-
-
-def _ensure_valid_output(result: dict[str, Any]) -> dict[str, Any]:
-    """Final output schema guard before returning to platform."""
+def _ensure_valid_output(result: dict) -> dict:
     ok_out, errors_out = validate_ops_audit_output(result)
     if not ok_out:
         raise AgentError(
@@ -225,273 +58,10 @@ def _ensure_valid_output(result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-SUPPORTED_TOOL_NAMES = set(PLATFORM_MCP_TOOLS.values())
-TASK_SCOPED_TOOLS = {
-    "aiv_get_task_lineage",
-    "aiv_list_routes",
-    "aiv_get_route_details",
-    "aiv_accept_task",
-    "aiv_complete_task",
-    "aiv_get_task_details",
-    "aiv_delegate_task",
-}
-
-GENERIC_TOOL_DESCRIPTIONS: dict[str, str] = {
-    "aiv_identify": "Return current agent identity and governance registration details.",
-    "aiv_check_action": "Check whether a planned action is allowed under governance rules before executing it.",
-    "aiv_log_activity": "Write an auditable activity event for the current agent or task.",
-    "aiv_heartbeat": "Send a heartbeat update so the platform knows this agent is active.",
-    "aiv_compliance_rules": "Fetch compliance and governance rules relevant to this agent.",
-    "aiv_poll_tasks": "Poll for inbound tasks that this agent can claim and work on.",
-    "aiv_complete_task": "Complete the current task with result or error details when work is finished.",
-    "aiv_discover_agents": "Search for available agents and their metadata.",
-    "aiv_platform_stats": "Retrieve governance and platform-level status metrics.",
-    "aiv_send_message": "Send a direct message to another agent using target_agent, intent, payload, and optional context.",
-    "aiv_get_rate_limit_status": "Check current rate limit usage and remaining allowance for this agent.",
-    "aiv_get_my_connections": "List this agent's active and pending connections.",
-    "aiv_request_connection": "Request a new connection to another agent or capability.",
-    "aiv_rotate_secret": "Rotate the current agent secret when operating in simple auth mode.",
-    "aiv_get_task_details": "Fetch detailed state and metadata for the current task.",
-    "aiv_get_my_metrics": "Get metrics and performance data for the current agent.",
-    "aiv_update_my_metadata": "Update this agent's public metadata and descriptive fields.",
-    "aiv_test_connection": "Test whether an agent connection is healthy and usable.",
-    "aiv_get_compliance_evidence": "Retrieve evidence records for compliance checks or audit trails.",
-    "aiv_store_data": "Store agent data or state in governance-managed storage.",
-    "aiv_retrieve_data": "Retrieve previously stored governance-managed data by key or namespace.",
-    "aiv_emergency_shutdown": "Trigger an emergency shutdown flow for this agent.",
-    "aiv_get_my_activity": "List recent activity and audit events for the current agent.",
-    "aiv_accept_task": "Claim an inbound task so this agent becomes the active worker.",
-}
-
-
-def _create_generic_tool_definition(name: str) -> dict[str, Any]:
-    return {
-        "type": "function",
-        "name": name,
-        "description": GENERIC_TOOL_DESCRIPTIONS.get(
-            name, f"Call governance MCP tool {name}."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {},
-            "additionalProperties": True,
-        },
-    }
-
-
-TOOL_DEFINITIONS: list[dict[str, Any]] = [
-    # Tool set exposed to model; model decides when/if to delegate.
-    {
-        "type": "function",
-        "name": "aiv_get_task_lineage",
-        "description": "Fetch lineage details for the current task id before delegation.",
-        "parameters": {
-            "type": "object",
-            "required": [],
-            "properties": {
-                "max_parent_depth": {"type": "number"},
-            },
-            "additionalProperties": False,
-        },
-    },
-    {
-        "type": "function",
-        "name": "aiv_list_routes",
-        "description": "List active routes this agent can use for delegation from current task.",
-        "parameters": {
-            "type": "object",
-            "required": [],
-            "properties": {
-                "page": {"type": "number"},
-                "per_page": {"type": "number"},
-            },
-            "additionalProperties": False,
-        },
-    },
-    {
-        "type": "function",
-        "name": "aiv_get_route_details",
-        "description": "Get details and schema expectations for a selected route.",
-        "parameters": {
-            "type": "object",
-            "required": ["slug"],
-            "properties": {
-                "slug": {"type": "string"},
-            },
-            "additionalProperties": False,
-        },
-    },
-    {
-        "type": "function",
-        "name": "aiv_delegate_task",
-        "description": (
-            "Delegate to a target agent. Use only with discovered active routes and correct lineage context."
-        ),
-        "parameters": {
-            "type": "object",
-            "required": [
-                "connection",
-                "target_agent_did",
-                "intent",
-                "payload",
-            ],
-            "properties": {
-                "connection": {"type": "string"},
-                "target_agent_did": {"type": "string"},
-                "intent": {"type": "string"},
-                "payload": {"type": "object"},
-                "context": {"type": "object"},
-            },
-            "additionalProperties": False,
-        },
-    },
-    *[
-        _create_generic_tool_definition(name)
-        for name in PLATFORM_MCP_TOOLS.values()
-        if name
-        not in {
-            "aiv_get_task_lineage",
-            "aiv_list_routes",
-            "aiv_get_route_details",
-            "aiv_delegate_task",
-        }
-    ],
-]
-
-
-def _extract_generic_target_did(args: dict[str, Any]) -> str | None:
-    for key in ("target_agent", "target_agent_did"):
-        candidate = args.get(key)
-        if isinstance(candidate, str) and candidate:
-            return candidate
-    return None
-
-
-def _run_tool_call(call: Any, request_task_id: str) -> Any:
-    """
-    Execute one model-requested tool call with guardrails:
-    - require route slug for aiv_delegate_task connection
-    - require payload object for delegation
-    - normalize missing context to {}
-    """
-    args = _parse_json(
-        call.arguments if isinstance(call.arguments, str) else "{}",
-        "Model produced invalid tool arguments",
-    )
-    if call.name not in SUPPORTED_TOOL_NAMES:
-        raise AgentError(
-            "EXECUTION_FAILED",
-            f"Unsupported tool requested: {call.name}",
-            False,
-            400,
-        )
-
-    if call.name == "aiv_get_task_lineage":
-        tool_args = {"task_id": request_task_id}
-        if isinstance(args.get("max_parent_depth"), (int, float)):
-            tool_args["max_parent_depth"] = args["max_parent_depth"]
-        return mcp_call_tool("aiv_get_task_lineage", tool_args)
-
-    if call.name == "aiv_list_routes":
-        tool_args = {"task_id": request_task_id}
-        if isinstance(args.get("page"), (int, float)):
-            tool_args["page"] = args["page"]
-        if isinstance(args.get("per_page"), (int, float)):
-            tool_args["per_page"] = args["per_page"]
-        return mcp_call_tool("aiv_list_routes", tool_args)
-
-    if call.name == "aiv_get_route_details":
-        slug = args.get("slug") or args.get("connection_slug")
-        if not isinstance(slug, str) or not slug:
-            raise AgentError(
-                "EXECUTION_FAILED",
-                "Model must provide route slug for aiv_get_route_details",
-                True,
-                502,
-            )
-        return mcp_call_tool("aiv_get_route_details", {"task_id": request_task_id, "slug": slug})
-
-    if call.name == "aiv_delegate_task":
-        connection = args.get("connection") or args.get("connection_slug")
-        target_agent_did = args.get("target_agent_did")
-        if not isinstance(connection, str) or not isinstance(target_agent_did, str):
-            raise AgentError(
-                "EXECUTION_FAILED",
-                "Model must provide connection and target_agent_did for aiv_delegate_task",
-                True,
-                502,
-            )
-        route_details: Any = None
-        if _is_uuid(connection):
-            return {
-                "error": {
-                    "code": "TOOL_ARGUMENTS_INVALID",
-                    "message": "aiv_delegate_task requires route slug in connection field, not UUID",
-                }
-            }
-        route_details = mcp_call_tool(
-            "aiv_get_route_details", {"task_id": request_task_id, "slug": connection}
-        )
-        resolved_target = _extract_target_did(route_details)
-        if isinstance(resolved_target, str):
-            target_agent_did = resolved_target
-        if not _is_plain_object(args.get("payload")):
-            if route_details is None and not _is_uuid(connection):
-                route_details = mcp_call_tool(
-                    "aiv_get_route_details", {"task_id": request_task_id, "slug": connection}
-                )
-            return {
-                "error": {
-                    "code": "TOOL_ARGUMENTS_INVALID",
-                    "message": (
-                        "aiv_delegate_task requires payload as a JSON object matching selected "
-                        "route intent schema"
-                    ),
-                },
-                "route_details": route_details,
-            }
-
-        delegate_args: dict[str, Any] = {
-            "task_id": request_task_id,
-            "connection": connection,
-            "target_agent": target_agent_did,
-            "intent": args.get("intent"),
-            "payload": args.get("payload"),
-            "context": args.get("context") if isinstance(args.get("context"), dict) else {},
-        }
-        return mcp_call_tool("aiv_delegate_task", delegate_args, target_agent_did)
-
-    generic_args = dict(args) if isinstance(args, dict) else {}
-    if call.name in TASK_SCOPED_TOOLS and not isinstance(generic_args.get("task_id"), str):
-        generic_args["task_id"] = request_task_id
-    return mcp_call_tool(call.name, generic_args, _extract_generic_target_did(generic_args))
-
-
-def _decide_with_llm(task: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
-    """
-    LLM orchestration loop:
-    - submit task prompt
-    - execute tool calls requested by model
-    - continue until model stops tool-calling
-    - require JSON final output
-    """
-    model = _get_model()
-    max_output_tokens = _get_max_output_tokens()
-    client = _get_openai_client()
-    initial_prompt = "\n".join(
+def _build_prompt(task: dict, payload: dict) -> str:
+    return "\n".join(
         [
-            "You are Compliance Risk Auditor.",
-            "You may use MCP tools to decide whether to delegate or complete locally.",
-            "Prefer the smallest necessary set of tools and avoid exploratory tool calls unless they are required to complete the task safely.",
-            "Use the route-first governance flow: aiv_get_task_lineage, aiv_list_routes, aiv_get_route_details, then aiv_delegate_task.",
-            "Do not hardcode targets; discover routes via tools and delegate only via active discovered route.",
-            "Depth guardrail: only delegate when context.depth < context.max_depth.",
-            "When finished, respond with JSON object only:",
-            (
-                '{ "findings": string, "severity": "low|medium|high|critical", '
-                '"recommendations": string[], "controls_passed"?: number }'
-            ),
-            "",
+            "Current task context:",
             json.dumps(
                 {
                     "task_id": task["task_id"],
@@ -501,58 +71,46 @@ def _decide_with_llm(task: dict[str, Any], payload: dict[str, Any]) -> dict[str,
                 },
                 indent=2,
             ),
+            "",
+            "Return only the structured output requested by the schema.",
         ]
     )
 
-    response = client.responses.create(
-        model=model,
-        input=initial_prompt,
-        tools=TOOL_DEFINITIONS,
-        max_output_tokens=max_output_tokens,
-    )
 
-    for _ in range(12):
-        # Hard loop cap prevents unbounded function-call chaining.
-        output = response.output if isinstance(response.output, list) else []
-        tool_calls = [item for item in output if getattr(item, "type", None) == "function_call"]
-        if not tool_calls:
-            break
-
-        tool_outputs: list[dict[str, Any]] = []
-        for call in tool_calls:
-            try:
-                result = _run_tool_call(call, task["task_id"])
-            except Exception as err:
-                result = {
-                    "error": {
-                        "code": "TOOL_EXECUTION_FAILED",
-                        "message": str(err),
-                    }
-                }
-            tool_outputs.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": call.call_id,
-                    "output": json.dumps(result),
-                }
-            )
-
-        response = client.responses.create(
-            model=model,
-            previous_response_id=response.id,
-            input=tool_outputs,
-            tools=TOOL_DEFINITIONS,
-            max_output_tokens=max_output_tokens,
+async def _decide_with_llm(task: dict, payload: dict) -> OpsAuditOutput:
+    mcp_server = create_governance_mcp_server()
+    async with mcp_server:
+        agent = Agent(
+            name="Compliance Risk Auditor",
+            instructions="\n".join(
+                [
+                    "You are Compliance Risk Auditor.",
+                    "You may use the connected governance MCP server to decide whether to delegate or complete locally.",
+                    "Prefer the smallest necessary set of tools and avoid exploratory tool calls unless they are required to complete the task safely.",
+                    "Use the route-first governance flow: aiv_get_task_lineage, aiv_list_routes, aiv_get_route_details, then aiv_delegate_task.",
+                    "Do not hardcode targets; discover routes via MCP tools and delegate only via active discovered route.",
+                    "Depth guardrail: only delegate when context.depth < context.max_depth.",
+                ]
+            ),
+            model=_get_model(),
+            model_settings=ModelSettings(max_tokens=_get_max_output_tokens()),
+            mcp_servers=[mcp_server],
+            output_type=OpsAuditOutput,
         )
 
-    return _parse_json(
-        response.output_text,
-        "LLM final output for ops.audit was not valid JSON",
-    )
+        result = await Runner.run(agent, _build_prompt(task, payload))
+        final_output = result.final_output_as(OpsAuditOutput, raise_if_incorrect_type=True)
+        if final_output is None:
+            raise AgentError(
+                "EXECUTION_FAILED",
+                "LLM run returned no structured output",
+                True,
+                502,
+            )
+        return final_output
 
 
-def run_ops_audit(task: dict[str, Any]) -> dict[str, Any]:
-    """Blueprint 03 handler for `ops.audit`."""
+async def run_ops_audit(task: dict) -> dict:
     payload = task["payload"]
     ok, errors = validate_ops_audit_input(payload)
     if not ok:
@@ -563,15 +121,6 @@ def run_ops_audit(task: dict[str, Any]) -> dict[str, Any]:
             400,
         )
 
-    llm_result = _decide_with_llm(task, payload)
-    result = {
-        "findings": llm_result.get("findings"),
-        "severity": llm_result.get("severity"),
-        "recommendations": llm_result.get("recommendations"),
-        **(
-            {"controls_passed": llm_result["controls_passed"]}
-            if "controls_passed" in llm_result
-            else {}
-        ),
-    }
+    llm_result = await _decide_with_llm(task, payload)
+    result = llm_result.model_dump(exclude_none=True)
     return _ensure_valid_output(result)
