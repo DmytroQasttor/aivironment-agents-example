@@ -7,9 +7,8 @@ Intent implemented:
 
 Behavior:
 - Validates inbound `a2a_forward` request and platform JWT auth.
-- Uses OpenAI Node SDK tool-calling loop (`responses.create`) for agent decisions.
-- Model decides whether to complete locally or delegate, and chooses target intent/payload via MCP tools.
-- Calls MCP tools when needed from the full `aiv_*` governance MCP surface, while keeping route-first guardrails for delegation.
+- Uses OpenAI Agents SDK native remote MCP support for agent decisions.
+- Model decides whether to complete locally or delegate through the Xano governance MCP.
 - Returns strict `a2a_response` result format.
 
 ## High-Level flow
@@ -25,10 +24,11 @@ This agent follows the same production-style lifecycle expected from external in
 4. Intent router (`src/agentRunner.js`) dispatches to `ops.orchestrate`.
 5. Intent handler (`src/agents/opsCoordinate.js`) performs:
    - payload validation
-   - LLM tool-calling loop with OpenAI Responses API
-   - MCP route discovery and optional delegation
-6. MCP wrapper (`src/mcp/mcpClientHttp.js`) injects outbound auth for each tool call and supports the full `aiv_*` governance MCP surface.
-7. Handler returns normalized `a2a_response` success/failure envelope.
+   - OpenAI Agents SDK run with native remote MCP access
+   - MCP route discovery and optional delegation through the server-provided tool catalog
+6. `src/openai/mcpServer.js` creates `MCPServerStreamableHttp` with a custom `fetch`.
+7. The transport auth helpers rebuild one opaque JWE `Authorization` header for each outgoing MCP request.
+8. Handler returns normalized `a2a_response` success/failure envelope.
 
 This gives deterministic platform contracts while preserving LLM-driven runtime decisions.
 
@@ -39,7 +39,7 @@ If you only need endpoint + MCP connection guidance (without business validation
 - `src/integration-kit/types.js` - base `a2a_forward` shape check helper
 - `src/integration-kit/connectionEndpoint.js` - minimal `/a2a` endpoint factory
 - `src/integration-kit/healthEndpoint.js` - minimal `/health` payload builder
-- `src/integration-kit/mcpToolkit.js` - thin wrappers plus full `PLATFORM_MCP_TOOLS` catalog for exposed `aiv_*` tools
+- `src/integration-kit/mcpToolkit.js` - legacy helper wrappers retained for compatibility/reference
 - `src/integration-kit/index.js` - barrel exports
 
 ## Run
@@ -56,6 +56,7 @@ Default port: `3200`.
 - `AGENT_DID`
 - `AGENT_AUTH_MODE`
 - `MCP_HTTP_URL` (Xano MCP stream endpoint, e.g. `.../mcp/stream`)
+- `MCP_AGENT_AUTH_JWE_KEY` (32 UTF-8 bytes, shared with Xano for MCP auth envelope)
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
 - `OPENAI_MAX_OUTPUT_TOKENS` (optional, default `1200`)
@@ -79,9 +80,12 @@ Agent -> Platform/MCP:
 - simple mode: `Authorization` + `X-Agent-ID`
 - advanced mode: `X-Agent-ID` + `X-Timestamp` + `X-Signature-Algorithm` + `X-Signature`
 
-For governance MCP routing tools, the example client passes:
-- simple mode: `agent_secret` + `agent_did`
-- advanced mode: `agent_did` + `timestamp_header` + `signature_header` + optional `algorithm_header`
+Agent -> MCP transport:
+- `Authorization: Bearer <opaque_jwe_token>`
+- JWE payload includes:
+  - simple mode: `auth_type`, `agent_did`, `agent_secret`
+  - advanced mode: `auth_type`, `agent_did`, `timestamp_header`, `signature_header`, optional `algorithm_header`
+- The native MCP transport builds this automatically for each request and the model sees MCP tools directly from the Xano server.
 
 Advanced signatures use canonical format:
 

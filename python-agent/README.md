@@ -8,8 +8,8 @@ Intent implemented:
 Behavior:
 - Verifies inbound platform JWT auth via JWKS.
 - Validates strict `a2a_forward` envelope and `ops.audit` input schema.
-- Uses OpenAI Python SDK tool-calling loop (`responses.create`) for runtime decisions.
-- Uses the full `aiv_*` governance MCP surface, with explicit route-first guardrails for `aiv_get_task_lineage`, `aiv_list_routes`, `aiv_get_route_details`, and `aiv_delegate_task`.
+- Uses the OpenAI Agents SDK with native remote MCP for runtime decisions.
+- Signs each outgoing MCP request through the transport auth layer so advanced auth remains request-bound.
 - Validates strict `ops.audit` output schema before returning.
 - Acts as terminal specialist by default, with optional LLM-driven delegation.
 
@@ -26,9 +26,10 @@ This agent uses the same production-style lifecycle expected from external integ
 4. Intent router (`app/agent_runner.py`) dispatches to `ops.audit`.
 5. Intent handler (`app/agents/ops_audit.py`) performs:
    - payload validation
-   - OpenAI Responses tool-calling loop
-   - MCP route discovery/context lookup and optional delegation
-6. MCP wrapper (`app/mcp_client.py`) injects outbound auth fields for tool calls and supports the full `aiv_*` governance MCP surface.
+   - OpenAI Agents SDK run with native remote MCP access
+   - direct use of the Xano-provided governance MCP tool catalog
+6. `app/openai_mcp.py` creates `MCPServerStreamableHttp` with custom `httpx.Auth`.
+7. The transport auth helpers rebuild one opaque JWE `Authorization` header for each outgoing MCP request.
 7. Agent returns normalized `a2a_response` success/failure envelope.
 
 This keeps strict I/O contracts for platform testing while still allowing LLM-driven decisions.
@@ -40,7 +41,7 @@ If you only need endpoint + MCP connection guidance (without business validation
 - `app/integration_kit/types.py` - base `a2a_forward` shape check helper
 - `app/integration_kit/connection_endpoint.py` - minimal `/a2a` endpoint factory
 - `app/integration_kit/health_endpoint.py` - minimal `/health` payload builder
-- `app/integration_kit/mcp_toolkit.py` - thin wrappers plus full `PLATFORM_MCP_TOOLS` catalog for exposed `aiv_*` tools
+- `app/integration_kit/mcp_toolkit.py` - legacy helper wrappers retained for compatibility/reference
 - `app/integration_kit/__init__.py` - package exports
 
 ## Local setup
@@ -67,6 +68,7 @@ Default port: `3300`.
 - `OPENAI_MODEL`
 - `OPENAI_MAX_OUTPUT_TOKENS` (optional, default `1200`)
 - `MCP_HTTP_URL` (Xano MCP stream endpoint, e.g. `.../mcp/stream`)
+- `MCP_AGENT_AUTH_JWE_KEY` (32 UTF-8 bytes, shared with Xano for MCP auth envelope)
 
 Simple mode:
 - `AGENT_SECRET`
@@ -87,9 +89,12 @@ Agent -> Platform/MCP:
 - simple mode: `Authorization` + `X-Agent-ID`
 - advanced mode: `X-Agent-ID` + `X-Timestamp` + `X-Signature-Algorithm` + `X-Signature`
 
-For governance MCP routing tools, the example client passes:
-- simple mode: `agent_secret` + `agent_did`
-- advanced mode: `agent_did` + `timestamp_header` + `signature_header` + optional `algorithm_header`
+Agent -> MCP transport:
+- `Authorization: Bearer <opaque_jwe_token>`
+- JWE payload includes:
+  - simple mode: `auth_type`, `agent_did`, `agent_secret`
+  - advanced mode: `auth_type`, `agent_did`, `timestamp_header`, `signature_header`, optional `algorithm_header`
+- The native MCP transport builds this automatically for each request while preserving the documented advanced-auth semantics.
 
 Advanced signatures use canonical format:
 
@@ -102,6 +107,14 @@ sha256:{BODY_HASH_HEX}
 ```
 
 For body hash parity this example canonicalizes JSON by recursively sorting object keys.
+
+## Dependency note
+
+This native MCP version depends on the Python Agents SDK stack and therefore uses:
+- `fastapi==0.135.1`
+- `openai-agents==0.13.2`
+
+Those versions were chosen to keep the FastAPI app compatible with the SDK's current Starlette dependency chain.
 
 ## Render deploy
 
