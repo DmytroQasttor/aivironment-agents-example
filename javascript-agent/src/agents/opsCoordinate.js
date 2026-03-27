@@ -65,6 +65,8 @@ async function decideWithLlm({ request, payload }) {
         "Use the route-first governance flow: aiv_get_task_lineage, aiv_list_routes, aiv_get_route_details, then aiv_delegate_task.",
         "Do not hardcode targets; discover routes via MCP tools and delegate only via active discovered route.",
         "Depth guardrail: only delegate when context.depth < context.max_depth.",
+        "When the task asks for specialist deliverables such as compliance findings, audit evidence, risk review, or remediation recommendations, check specialist routes before finalizing a local answer.",
+        "If a valid downstream specialist route exists for that specialist work, prefer delegating the specialist portion and then synthesizing the result rather than producing the full specialist output locally.",
         "If the task asks for compliance, audit, risk review, or recommendations and a valid downstream specialist route exists for that work, prefer delegating that specialized work instead of completing everything locally.",
         "Keep the work local only when no valid route exists, delegation depth is exhausted, or the downstream route does not allow the needed intent.",
       ].join("\n"),
