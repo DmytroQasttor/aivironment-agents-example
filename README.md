@@ -27,8 +27,9 @@ Examples are aligned with the platform auth flow:
 - Platform -> Agent:
   - `Authorization: Bearer <platform_jwt>` verified using platform JWKS
 - Agent -> MCP:
-  - `Authorization: Bearer <opaque_jwe_token>`
-  - the bearer value is transport-level MCP auth, not a tool argument
+  - simple mode: `Authorization: Bearer agt_sk_...` + `X-Agent-ID`
+  - advanced mode: `X-Agent-ID` + `X-Timestamp` + `X-Signature` + `X-Signature-Algorithm`
+  - auth is transport-level MCP auth, not a tool argument
 
 High-level flow:
 1. Your agent authenticates itself when it calls platform APIs (`/a2a/send`, MCP tools).
@@ -38,7 +39,6 @@ High-level flow:
 
 Each stack keeps one codebase and switches behavior using `AGENT_AUTH_MODE`.
 For simple mode, standardize on `AGENT_SECRET`; `AGENT_API_KEY` remains supported only as a legacy alias.
-All MCP deploys also require `MCP_AGENT_AUTH_JWE_KEY`, shared with Xano and expected to be exactly 32 UTF-8 bytes.
 
 All three example stacks now use native remote MCP against the Xano stream URL. Xano is the source of truth for tool names, descriptions, and schemas.
 

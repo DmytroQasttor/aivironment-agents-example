@@ -31,9 +31,9 @@ This agent implements the same runtime pattern expected from real 3rd-party inte
    - OpenAI Agents SDK run with native remote MCP access
    - direct use of the Xano-provided governance MCP tool catalog
 6. For MCP access, `src/openai/mcpServer.ts` creates `MCPServerStreamableHttp` with a custom `fetch`.
-7. The transport auth helpers rebuild the opaque JWE `Authorization` header for every outgoing MCP request:
-   - simple mode: JWE carries `agent_secret` + `agent_did`
-   - advanced mode: JWE carries fresh request-bound signature fields generated from canonical method/path/body
+7. The transport auth helpers attach direct auth headers on every outgoing MCP request:
+   - simple mode: `Authorization` + `X-Agent-ID`
+   - advanced mode: fresh request-bound signature headers generated from canonical method/path/body
 8. Handler returns normalized `a2a_response`:
    - `status: completed` + JSON object `result`
    - or `status: failed` + structured `error`
@@ -62,7 +62,7 @@ This keeps behavior deterministic for platform E2E tests while still allowing LL
 - `src/auth/inboundAuth.ts` - simple/advanced inbound auth checks
 - `src/auth/outboundAuth.ts` - simple/advanced outbound headers/signing
 - `src/openai/mcpServer.ts` - native remote MCP server bootstrap for the Xano governance MCP
-- `src/mcp/mcpTransportAuth.ts` - per-request MCP auth envelope generation for simple/advanced modes
+- `src/mcp/mcpTransportAuth.ts` - per-request MCP transport header generation for simple/advanced modes
 - `src/utils/signature.ts` - timing-safe HMAC verification
 
 ### Integration-kit (for FE/Docs instructions)
@@ -102,7 +102,6 @@ cp .env.example .env
 - `AGENT_DID`
 - `AGENT_AUTH_MODE` (`simple` or `advanced`)
 - `MCP_HTTP_URL` (Xano MCP stream endpoint, e.g. `.../mcp/stream`)
-- `MCP_AGENT_AUTH_JWE_KEY` (32 UTF-8 bytes, shared with Xano for MCP auth envelope)
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
 - `OPENAI_MAX_OUTPUT_TOKENS` (optional, default `1200`)
@@ -163,11 +162,15 @@ Agent -> Platform and MCP tools:
   - `X-Signature` (JWS over canonical string)
 
 Agent -> MCP:
-- `Authorization: Bearer <opaque_jwe_token>`
-- JWE payload includes:
-  - simple mode: `auth_type`, `agent_did`, `agent_secret`
-  - advanced mode: `auth_type`, `agent_did`, `timestamp_header`, `signature_header`, optional `algorithm_header`
-- The custom MCP transport builds this automatically for each request; the model sees MCP tools directly from the Xano server.
+- `AGENT_AUTH_MODE=simple`
+  - `Authorization: Bearer <agent_secret_or_key>`
+  - `X-Agent-ID: <agent_did>`
+- `AGENT_AUTH_MODE=advanced`
+  - `X-Agent-ID`
+  - `X-Timestamp`
+  - `X-Signature-Algorithm`
+  - `X-Signature`
+- The custom MCP transport builds these headers automatically for each request; the model sees MCP tools directly from the Xano server.
 
 Advanced canonical format:
 

@@ -1,4 +1,4 @@
-import { buildMcpAuthorizationHeader } from "./mcpAuthHeader.js";
+import { buildOutboundAuthHeaders } from "../auth/outboundAuth.js";
 
 function isMcpDebugEnabled() {
   return process.env.MCP_DEBUG === "1" || process.env.MCP_DEBUG === "true";
@@ -143,7 +143,7 @@ function requestUrl(input) {
   return input.url;
 }
 
-function mergeHeaders(input, init, authorization) {
+function mergeHeaders(input, init, authHeaders) {
   const headers = new Headers(input instanceof Request ? input.headers : undefined);
   if (init?.headers) {
     const initHeaders = new Headers(init.headers);
@@ -151,7 +151,9 @@ function mergeHeaders(input, init, authorization) {
       headers.set(key, value);
     });
   }
-  headers.set("Authorization", authorization);
+  for (const [key, value] of Object.entries(authHeaders)) {
+    headers.set(key, value);
+  }
   return headers;
 }
 
@@ -196,7 +198,7 @@ async function resolveAuthSpec(input, init) {
 export function createGovernanceMcpFetch() {
   return async (input, init) => {
     const authSpec = await resolveAuthSpec(input, init);
-    const authorization = await buildMcpAuthorizationHeader({
+    const authHeaders = await buildOutboundAuthHeaders({
       method: authSpec.method,
       path: authSpec.path,
       body: authSpec.body,
@@ -205,12 +207,15 @@ export function createGovernanceMcpFetch() {
     logMcpDebug("sending request", {
       method: authSpec.method,
       path: authSpec.path,
-      auth_header_present: true,
-      auth_header_prefix: authorization.slice(0, 16),
+      auth_header_present: typeof authHeaders.Authorization === "string",
+      auth_header_prefix:
+        typeof authHeaders.Authorization === "string" ? authHeaders.Authorization.slice(0, 16) : null,
+      agent_id_header_present: typeof authHeaders["X-Agent-ID"] === "string",
+      signature_header_present: typeof authHeaders["X-Signature"] === "string",
     });
     const response = await fetch(input, {
       ...init,
-      headers: mergeHeaders(input, init, authorization),
+      headers: mergeHeaders(input, init, authHeaders),
     });
     logMcpDebug("received response", {
       status: response.status,

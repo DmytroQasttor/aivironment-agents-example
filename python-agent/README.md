@@ -29,8 +29,8 @@ This agent uses the same production-style lifecycle expected from external integ
    - OpenAI Agents SDK run with native remote MCP access
    - direct use of the Xano-provided governance MCP tool catalog
 6. `app/openai_mcp.py` creates `MCPServerStreamableHttp` with custom `httpx.Auth`.
-7. The transport auth helpers rebuild one opaque JWE `Authorization` header for each outgoing MCP request.
-7. Agent returns normalized `a2a_response` success/failure envelope.
+7. The transport auth helpers attach direct auth headers for each outgoing MCP request.
+8. Agent returns normalized `a2a_response` success/failure envelope.
 
 This keeps strict I/O contracts for platform testing while still allowing LLM-driven decisions.
 
@@ -67,7 +67,6 @@ Default port: `3300`.
 - `OPENAI_MODEL`
 - `OPENAI_MAX_OUTPUT_TOKENS` (optional, default `1200`)
 - `MCP_HTTP_URL` (Xano MCP stream endpoint, e.g. `.../mcp/stream`)
-- `MCP_AGENT_AUTH_JWE_KEY` (32 UTF-8 bytes, shared with Xano for MCP auth envelope)
 
 Simple mode:
 - `AGENT_SECRET`
@@ -89,11 +88,9 @@ Agent -> Platform/MCP:
 - advanced mode: `X-Agent-ID` + `X-Timestamp` + `X-Signature-Algorithm` + `X-Signature`
 
 Agent -> MCP transport:
-- `Authorization: Bearer <opaque_jwe_token>`
-- JWE payload includes:
-  - simple mode: `auth_type`, `agent_did`, `agent_secret`
-  - advanced mode: `auth_type`, `agent_did`, `timestamp_header`, `signature_header`, optional `algorithm_header`
-- The native MCP transport builds this automatically for each request while preserving the documented advanced-auth semantics.
+- simple mode: `Authorization` + `X-Agent-ID`
+- advanced mode: `X-Agent-ID` + `X-Timestamp` + `X-Signature-Algorithm` + `X-Signature`
+- The native MCP transport builds these headers automatically for each request while preserving the documented advanced-auth semantics.
 
 Advanced signatures use canonical format:
 

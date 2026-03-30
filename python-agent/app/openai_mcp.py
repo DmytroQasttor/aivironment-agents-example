@@ -5,8 +5,8 @@ from typing import Any
 import httpx
 from agents.mcp import MCPServerStreamableHttp
 
+from app.auth.outbound_auth import build_outbound_auth_headers
 from app.errors import AgentError
-from app.mcp_auth_header import build_mcp_authorization_header
 
 
 def _mcp_debug_enabled() -> bool:
@@ -125,13 +125,25 @@ class GovernanceMcpAuth(httpx.Auth):
                 "target_agent_did": auth_spec.get("target_agent_did"),
             },
         )
-        authorization = build_mcp_authorization_header(auth_spec)
-        request.headers["Authorization"] = authorization
+        auth_headers = build_outbound_auth_headers(
+            method=str(auth_spec.get("method", "POST")),
+            path=str(auth_spec.get("path", "/")),
+            body=str(auth_spec.get("body", "")),
+            target_agent_did=auth_spec.get("target_agent_did"),
+        )
+        for key, value in auth_headers.items():
+            request.headers[key] = value
         _log_mcp_debug(
             "auth header attached",
             {
-                "auth_header_present": True,
-                "auth_header_prefix": authorization[:16],
+                "auth_header_present": isinstance(auth_headers.get("Authorization"), str),
+                "auth_header_prefix": (
+                    auth_headers.get("Authorization", "")[:16]
+                    if isinstance(auth_headers.get("Authorization"), str)
+                    else None
+                ),
+                "agent_id_header_present": isinstance(auth_headers.get("X-Agent-ID"), str),
+                "signature_header_present": isinstance(auth_headers.get("X-Signature"), str),
             },
         )
         yield request
