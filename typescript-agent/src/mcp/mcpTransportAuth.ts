@@ -30,6 +30,15 @@ function logMcpDebug(message: string, data?: Record<string, unknown>) {
   console.log("[mcp-debug]", message);
 }
 
+function summarizeAuthHeaders(authHeaders: Record<string, string>) {
+  return Object.fromEntries(
+    Object.entries(authHeaders).map(([key, value]) => [
+      key,
+      typeof value === "string" ? value.slice(0, 32) : null,
+    ]),
+  );
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -237,6 +246,8 @@ export function createGovernanceMcpFetch(): typeof fetch {
         typeof authHeaders.Authorization === "string" ? authHeaders.Authorization.slice(0, 16) : null,
       agent_id_header_present: typeof authHeaders["Agent-ID"] === "string",
       signature_header_present: typeof authHeaders.Signature === "string",
+      auth_header_names: Object.keys(authHeaders),
+      auth_header_values: summarizeAuthHeaders(authHeaders),
     });
     const response = await fetch(input, finalInit);
     logMcpDebug("received response", {

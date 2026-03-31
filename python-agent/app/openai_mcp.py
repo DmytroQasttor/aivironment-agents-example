@@ -23,6 +23,13 @@ def _log_mcp_debug(message: str, data: dict[str, Any] | None = None) -> None:
     print("[mcp-debug]", message, json.dumps(data, ensure_ascii=False))
 
 
+def _summarize_auth_headers(auth_headers: dict[str, str]) -> dict[str, str | None]:
+    return {
+        key: (value[:32] if isinstance(value, str) else None)
+        for key, value in auth_headers.items()
+    }
+
+
 def _is_plain_object(value: Any) -> bool:
     return isinstance(value, dict)
 
@@ -144,6 +151,8 @@ class GovernanceMcpAuth(httpx.Auth):
                 ),
                 "agent_id_header_present": isinstance(auth_headers.get("Agent-ID"), str),
                 "signature_header_present": isinstance(auth_headers.get("Signature"), str),
+                "auth_header_names": list(auth_headers.keys()),
+                "auth_header_values": _summarize_auth_headers(auth_headers),
             },
         )
         yield request
