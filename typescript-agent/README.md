@@ -168,7 +168,7 @@ Agent -> MCP:
 - `AGENT_AUTH_MODE=advanced`
   - `Authorization: Bearer <base64url-json-envelope>`
   - envelope contains `auth_mode`, `agent_did`, `timestamp`, `signature`, `algorithm`, `session_method`, `session_path`, `session_body_hash`, `session_target_agent_did`
-- The custom MCP transport builds this bearer envelope once per MCP session and reuses it; the model sees MCP tools directly from the Xano server.
+- The custom MCP transport builds this bearer envelope once per MCP session, the platform stores a server-side MCP session, and the client refreshes proactively with one retry on unauthorized.
 
 Advanced direct API canonical format:
 
@@ -222,4 +222,4 @@ curl http://localhost:3000/health
 
 Notes:
 - Direct API advanced auth keeps the short request-bound validation window.
-- MCP advanced auth is session-based and should reconnect before the 15-minute session TTL expires.
+- MCP advanced auth is session-based and should refresh before the inactivity timeout expires.

@@ -29,7 +29,7 @@ This agent uses the same production-style lifecycle expected from external integ
    - OpenAI Agents SDK run with native remote MCP access
    - direct use of the Xano-provided governance MCP tool catalog
 6. `app/openai_mcp.py` creates `MCPServerStreamableHttp` with custom `httpx.Auth`.
-7. The transport auth helpers establish one MCP session bearer envelope and reuse it for later MCP requests in that session.
+7. The transport auth helpers establish one MCP session bearer envelope, let the platform create a stored MCP session, and reuse it for later MCP requests in that session.
 8. Agent returns normalized `a2a_response` success/failure envelope.
 
 This keeps strict I/O contracts for platform testing while still allowing LLM-driven decisions.
@@ -90,7 +90,7 @@ Agent -> Platform/MCP:
 Agent -> MCP transport:
 - simple mode: one `Authorization: Bearer <base64url-json-envelope>` for the MCP session
 - advanced mode: one `Authorization: Bearer <base64url-json-envelope>` for the MCP session, signed from the session-establishing MCP request
-- The native MCP transport builds this bearer envelope automatically and reuses it during the MCP session.
+- The native MCP transport builds this bearer envelope automatically, refreshes it proactively, and retries once on unauthorized.
 
 Direct API advanced signatures use canonical format:
 

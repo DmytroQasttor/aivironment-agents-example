@@ -8,7 +8,7 @@ from agents.mcp import MCPServerStreamableHttp
 from app.auth.outbound_auth import build_mcp_session_auth_headers
 from app.errors import AgentError
 
-MCP_SESSION_TTL_MS = 15 * 60 * 1000
+MCP_SESSION_TTL_MS = 8 * 60 * 1000
 
 
 def _mcp_debug_enabled() -> bool:
@@ -128,19 +128,15 @@ class GovernanceMcpAuth(httpx.Auth):
         self._session_auth_headers: dict[str, str] | None = None
         self._session_started_ms = 0
 
-    def auth_flow(self, request: httpx.Request):
-        auth_spec = _resolve_request_auth_spec(request)
-        _log_mcp_debug(
-            "sending request",
-            {
-                "method": auth_spec.get("method"),
-                "path": auth_spec.get("path"),
-                "target_agent_did": auth_spec.get("target_agent_did"),
-            },
-        )
+    def _get_session_headers(
+        self,
+        auth_spec: dict[str, Any],
+        force_refresh: bool = False,
+    ) -> tuple[dict[str, str], bool]:
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         should_create_session = (
-            self._session_auth_headers is None
+            force_refresh
+            or self._session_auth_headers is None
             or (now_ms - self._session_started_ms) >= MCP_SESSION_TTL_MS
         )
         if should_create_session:
@@ -157,16 +153,29 @@ class GovernanceMcpAuth(httpx.Auth):
                     "method": auth_spec.get("method"),
                     "path": auth_spec.get("path"),
                     "session_ttl_ms": MCP_SESSION_TTL_MS,
+                    "forced_refresh": force_refresh,
                 },
             )
 
-        auth_headers = self._session_auth_headers
+        return self._session_auth_headers or {}, (not should_create_session)
+
+    def auth_flow(self, request: httpx.Request):
+        auth_spec = _resolve_request_auth_spec(request)
+        _log_mcp_debug(
+            "sending request",
+            {
+                "method": auth_spec.get("method"),
+                "path": auth_spec.get("path"),
+                "target_agent_did": auth_spec.get("target_agent_did"),
+            },
+        )
+        auth_headers, reused = self._get_session_headers(auth_spec, False)
         for key, value in auth_headers.items():
             request.headers[key] = value
         _log_mcp_debug(
             "auth header attached",
             {
-                "mcp_session_reused": not should_create_session,
+                "mcp_session_reused": reused,
                 "auth_header_present": isinstance(auth_headers.get("Authorization"), str),
                 "auth_header_prefix": (
                     auth_headers.get("Authorization", "")[:16]
@@ -178,7 +187,25 @@ class GovernanceMcpAuth(httpx.Auth):
                 "auth_header_values": _summarize_auth_headers(auth_headers),
             },
         )
-        yield request
+        response = yield request
+        if response.status_code == 401:
+            _log_mcp_debug(
+                "mcp session unauthorized, refreshing",
+                {
+                    "method": auth_spec.get("method"),
+                    "path": auth_spec.get("path"),
+                },
+            )
+            retry_headers, _ = self._get_session_headers(auth_spec, True)
+            retry_request = httpx.Request(
+                method=request.method,
+                url=request.url,
+                headers=request.headers,
+                content=request.content,
+            )
+            for key, value in retry_headers.items():
+                retry_request.headers[key] = value
+            yield retry_request
 
 
 def create_governance_mcp_server() -> MCPServerStreamableHttp:

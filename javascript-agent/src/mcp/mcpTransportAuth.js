@@ -1,6 +1,6 @@
 import { buildMcpSessionAuthHeaders } from "../auth/outboundAuth.js";
 
-const MCP_SESSION_TTL_MS = 15 * 60 * 1000;
+const MCP_SESSION_TTL_MS = 8 * 60 * 1000;
 
 function isMcpDebugEnabled() {
   return process.env.MCP_DEBUG === "1" || process.env.MCP_DEBUG === "true";
@@ -207,11 +207,12 @@ export function createGovernanceMcpFetch() {
   let sessionAuthHeaders = null;
   let sessionStartedAtMs = 0;
 
-  return async (input, init) => {
-    const authSpec = await resolveAuthSpec(input, init);
+  async function getSessionHeaders(authSpec, forceRefresh = false) {
     const nowMs = Date.now();
     const shouldCreateSession =
-      sessionAuthHeaders == null || nowMs - sessionStartedAtMs >= MCP_SESSION_TTL_MS;
+      forceRefresh ||
+      sessionAuthHeaders == null ||
+      nowMs - sessionStartedAtMs >= MCP_SESSION_TTL_MS;
 
     if (shouldCreateSession) {
       sessionAuthHeaders = await buildMcpSessionAuthHeaders({
@@ -225,14 +226,24 @@ export function createGovernanceMcpFetch() {
         method: authSpec.method,
         path: authSpec.path,
         session_ttl_ms: MCP_SESSION_TTL_MS,
+        forced_refresh: forceRefresh,
       });
     }
 
-    const authHeaders = sessionAuthHeaders;
+    return {
+      authHeaders: sessionAuthHeaders,
+      reused: !shouldCreateSession,
+    };
+  }
+
+  return async (input, init) => {
+    const authSpec = await resolveAuthSpec(input, init);
+    const firstAttempt = await getSessionHeaders(authSpec, false);
+    const authHeaders = firstAttempt.authHeaders;
     logMcpDebug("sending request", {
       method: authSpec.method,
       path: authSpec.path,
-      mcp_session_reused: !shouldCreateSession,
+      mcp_session_reused: firstAttempt.reused,
       auth_header_present: typeof authHeaders.Authorization === "string",
       auth_header_prefix:
         typeof authHeaders.Authorization === "string" ? authHeaders.Authorization.slice(0, 16) : null,
@@ -244,6 +255,23 @@ export function createGovernanceMcpFetch() {
       ...init,
       headers: mergeHeaders(input, init, authHeaders),
     });
+    if (response.status === 401) {
+      logMcpDebug("mcp session unauthorized, refreshing", {
+        method: authSpec.method,
+        path: authSpec.path,
+      });
+      const retryAttempt = await getSessionHeaders(authSpec, true);
+      const retryResponse = await fetch(input, {
+        ...init,
+        headers: mergeHeaders(input, init, retryAttempt.authHeaders),
+      });
+      logMcpDebug("received response", {
+        status: retryResponse.status,
+        ok: retryResponse.ok,
+        retried: true,
+      });
+      return retryResponse;
+    }
     logMcpDebug("received response", {
       status: response.status,
       ok: response.ok,

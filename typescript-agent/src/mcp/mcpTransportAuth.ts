@@ -1,6 +1,6 @@
 import { buildMcpSessionAuthHeaders } from "../auth/outboundAuth";
 
-const MCP_SESSION_TTL_MS = 15 * 60 * 1000;
+const MCP_SESSION_TTL_MS = 8 * 60 * 1000;
 
 type ToolAuthSpec = {
   method: string;
@@ -231,11 +231,12 @@ export function createGovernanceMcpFetch(): typeof fetch {
   let sessionAuthHeaders: Record<string, string> | null = null;
   let sessionStartedAtMs = 0;
 
-  return async (input, init) => {
-    const authSpec = await resolveAuthSpec(input, init);
+  async function getSessionHeaders(authSpec: ToolAuthSpec, forceRefresh = false) {
     const nowMs = Date.now();
     const shouldCreateSession =
-      sessionAuthHeaders == null || nowMs - sessionStartedAtMs >= MCP_SESSION_TTL_MS;
+      forceRefresh ||
+      sessionAuthHeaders == null ||
+      nowMs - sessionStartedAtMs >= MCP_SESSION_TTL_MS;
 
     if (shouldCreateSession) {
       sessionAuthHeaders = await buildMcpSessionAuthHeaders({
@@ -249,10 +250,20 @@ export function createGovernanceMcpFetch(): typeof fetch {
         method: authSpec.method,
         path: authSpec.path,
         session_ttl_ms: MCP_SESSION_TTL_MS,
+        forced_refresh: forceRefresh,
       });
     }
 
-    const authHeaders = sessionAuthHeaders as Record<string, string>;
+    return {
+      authHeaders: sessionAuthHeaders as Record<string, string>,
+      reused: !shouldCreateSession,
+    };
+  }
+
+  return async (input, init) => {
+    const authSpec = await resolveAuthSpec(input, init);
+    const firstAttempt = await getSessionHeaders(authSpec, false);
+    const authHeaders = firstAttempt.authHeaders;
     const finalInit: RequestInit = {
       ...init,
       headers: mergeHeaders(input, init, authHeaders),
@@ -260,7 +271,7 @@ export function createGovernanceMcpFetch(): typeof fetch {
     logMcpDebug("sending request", {
       method: authSpec.method,
       path: authSpec.path,
-      mcp_session_reused: !shouldCreateSession,
+      mcp_session_reused: firstAttempt.reused,
       auth_header_present: typeof authHeaders.Authorization === "string",
       auth_header_prefix:
         typeof authHeaders.Authorization === "string" ? authHeaders.Authorization.slice(0, 16) : null,
@@ -269,6 +280,23 @@ export function createGovernanceMcpFetch(): typeof fetch {
       auth_header_values: summarizeAuthHeaders(authHeaders),
     });
     const response = await fetch(input, finalInit);
+    if (response.status === 401) {
+      logMcpDebug("mcp session unauthorized, refreshing", {
+        method: authSpec.method,
+        path: authSpec.path,
+      });
+      const retryAttempt = await getSessionHeaders(authSpec, true);
+      const retryResponse = await fetch(input, {
+        ...init,
+        headers: mergeHeaders(input, init, retryAttempt.authHeaders),
+      });
+      logMcpDebug("received response", {
+        status: retryResponse.status,
+        ok: retryResponse.ok,
+        retried: true,
+      });
+      return retryResponse;
+    }
     logMcpDebug("received response", {
       status: response.status,
       ok: response.ok,

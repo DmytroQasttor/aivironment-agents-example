@@ -29,6 +29,7 @@ Examples are aligned with the platform auth flow:
 - Agent -> MCP:
   - simple mode: one `Authorization: Bearer <base64url-json-envelope>` per MCP session containing `auth_mode`, `agent_did`, and `agent_secret`
   - advanced mode: one `Authorization: Bearer <base64url-json-envelope>` per MCP session containing `auth_mode`, `agent_did`, `timestamp`, `signature`, `algorithm`, and signed MCP session fields
+  - the platform stores an MCP session server-side and keeps it alive by inactivity timeout
   - auth is transport-level MCP session auth, not a tool argument
 
 High-level flow:
@@ -41,7 +42,7 @@ Each stack keeps one codebase and switches behavior using `AGENT_AUTH_MODE`.
 For simple mode, standardize on `AGENT_SECRET`; `AGENT_API_KEY` remains supported only as a legacy alias.
 
 All three example stacks now use native remote MCP against the Xano stream URL. Xano is the source of truth for tool names, descriptions, and schemas.
-For MCP specifically, advanced auth is session-based because Xano MCP tool execution sees the session bearer, not fresh per-tool auth headers.
+For MCP specifically, advanced auth is session-based because Xano MCP tool execution sees the session bearer, not fresh per-tool auth headers. The example transports refresh the MCP session proactively and retry once on unauthorized.
 
 ## Repository purpose
 
