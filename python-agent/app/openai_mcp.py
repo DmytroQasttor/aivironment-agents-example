@@ -142,8 +142,8 @@ class GovernanceMcpAuth(httpx.Auth):
                     if isinstance(auth_headers.get("Authorization"), str)
                     else None
                 ),
-                "agent_id_header_present": isinstance(auth_headers.get("X-Agent-ID"), str),
-                "signature_header_present": isinstance(auth_headers.get("X-Signature"), str),
+                "agent_id_header_present": isinstance(auth_headers.get("Agent-ID"), str),
+                "signature_header_present": isinstance(auth_headers.get("Signature"), str),
             },
         )
         yield request

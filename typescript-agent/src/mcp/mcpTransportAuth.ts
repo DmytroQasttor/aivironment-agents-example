@@ -235,8 +235,8 @@ export function createGovernanceMcpFetch(): typeof fetch {
       auth_header_present: typeof authHeaders.Authorization === "string",
       auth_header_prefix:
         typeof authHeaders.Authorization === "string" ? authHeaders.Authorization.slice(0, 16) : null,
-      agent_id_header_present: typeof authHeaders["X-Agent-ID"] === "string",
-      signature_header_present: typeof authHeaders["X-Signature"] === "string",
+      agent_id_header_present: typeof authHeaders["Agent-ID"] === "string",
+      signature_header_present: typeof authHeaders.Signature === "string",
     });
     const response = await fetch(input, finalInit);
     logMcpDebug("received response", {

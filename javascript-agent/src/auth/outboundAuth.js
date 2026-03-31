@@ -54,7 +54,7 @@ export async function buildOutboundAuthHeaders({
     }
     return {
       Authorization: `Bearer ${apiKey}`,
-      "X-Agent-ID": agentDid,
+      "Agent-ID": agentDid,
     };
   }
 
@@ -78,9 +78,9 @@ export async function buildOutboundAuthHeaders({
     .sign(await getPrivateKey(alg));
 
   return {
-    "X-Agent-ID": agentDid,
-    "X-Timestamp": timestampMs,
-    "X-Signature": signature,
-    "X-Signature-Algorithm": alg,
+    "Agent-ID": agentDid,
+    Timestamp: timestampMs,
+    Signature: signature,
+    "Signature-Algorithm": alg,
   };
 }

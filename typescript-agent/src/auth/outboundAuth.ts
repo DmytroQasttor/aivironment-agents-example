@@ -88,7 +88,7 @@ export async function buildOutboundAuthHeaders(params: {
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${apiKey}`,
-      "X-Agent-ID": agentDid,
+      "Agent-ID": agentDid,
     };
     return headers;
   }
@@ -112,10 +112,10 @@ export async function buildOutboundAuthHeaders(params: {
     .sign(await getPrivateKey(alg));
 
   const headers: Record<string, string> = {
-    "X-Agent-ID": agentDid,
-    "X-Timestamp": timestampMs,
-    "X-Signature": signature,
-    "X-Signature-Algorithm": alg,
+    "Agent-ID": agentDid,
+    Timestamp: timestampMs,
+    Signature: signature,
+    "Signature-Algorithm": alg,
   };
   return headers;
 }

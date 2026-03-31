@@ -52,7 +52,7 @@ def build_outbound_auth_headers(
             )
         return {
             "Authorization": f"Bearer {api_key}",
-            "X-Agent-ID": agent_did,
+            "Agent-ID": agent_did,
         }
 
     alg = os.getenv("AGENT_SIGNATURE_ALGORITHM", "RS256")
@@ -83,8 +83,8 @@ def build_outbound_auth_headers(
     )
 
     return {
-        "X-Agent-ID": agent_did,
-        "X-Timestamp": timestamp_ms,
-        "X-Signature": token,
-        "X-Signature-Algorithm": alg,
+        "Agent-ID": agent_did,
+        "Timestamp": timestamp_ms,
+        "Signature": token,
+        "Signature-Algorithm": alg,
     }
