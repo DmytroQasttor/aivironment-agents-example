@@ -32,14 +32,20 @@ function sortKeysDeep(value) {
   return sorted;
 }
 
-function canonicalBodyHash(rawBody) {
+function bodyHashCandidates(rawBody) {
+  const candidates = new Set([
+    crypto.createHash("sha256").update(rawBody).digest("hex"),
+  ]);
   try {
     const parsed = JSON.parse(rawBody.toString("utf8"));
     const canonical = JSON.stringify(sortKeysDeep(parsed));
-    return crypto.createHash("sha256").update(canonical, "utf8").digest("hex");
+    candidates.add(
+      crypto.createHash("sha256").update(canonical, "utf8").digest("hex"),
+    );
   } catch {
-    return crypto.createHash("sha256").update(rawBody).digest("hex");
+    // Keep raw hash only.
   }
+  return candidates;
 }
 
 /**
@@ -49,7 +55,7 @@ function canonicalBodyHash(rawBody) {
 export async function verifyInboundAuth({ headers, rawBody, taskId, correlationId }) {
   const agentDid = getAgentDid();
   const auth = headers.authorization;
-  const bodyHash = canonicalBodyHash(rawBody);
+  const bodyHashes = bodyHashCandidates(rawBody);
   if (auth && auth.startsWith("Bearer ")) {
     const token = auth.slice("Bearer ".length).trim();
 
@@ -76,11 +82,11 @@ export async function verifyInboundAuth({ headers, rawBody, taskId, correlationI
     if (typeof payload.path === "string" && payload.path !== "/a2a") {
       throw new AgentError("AUTH_INVALID", "JWT path mismatch", false, 401);
     }
-    if (
-      typeof payload.body_hash === "string" &&
-      payload.body_hash !== bodyHash &&
-      payload.body_hash !== `sha256:${bodyHash}`
-    ) {
+    const acceptedHashes = new Set([
+      ...bodyHashes,
+      ...Array.from(bodyHashes).map((bodyHash) => `sha256:${bodyHash}`),
+    ]);
+    if (typeof payload.body_hash === "string" && !acceptedHashes.has(payload.body_hash)) {
       throw new AgentError("AUTH_INVALID", "JWT body hash mismatch", false, 401);
     }
 

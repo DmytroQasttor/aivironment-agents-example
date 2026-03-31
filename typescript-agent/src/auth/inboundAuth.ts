@@ -47,14 +47,20 @@ function sortKeysDeep(value: unknown): unknown {
 
 // Preferred body hash path: parse -> deep-sort keys -> stringify -> sha256.
 // Fallback to raw bytes hash if body is not valid JSON.
-function canonicalBodyHash(rawBody: Buffer) {
+function bodyHashCandidates(rawBody: Buffer) {
+  const candidates = new Set<string>([
+    crypto.createHash("sha256").update(rawBody).digest("hex"),
+  ]);
   try {
     const parsed = JSON.parse(rawBody.toString("utf8")) as unknown;
     const canonical = JSON.stringify(sortKeysDeep(parsed));
-    return crypto.createHash("sha256").update(canonical, "utf8").digest("hex");
+    candidates.add(
+      crypto.createHash("sha256").update(canonical, "utf8").digest("hex"),
+    );
   } catch {
-    return crypto.createHash("sha256").update(rawBody).digest("hex");
+    // Keep raw hash only.
   }
+  return candidates;
 }
 
 /**
@@ -82,7 +88,7 @@ export async function verifyInboundAuth(params: {
   }
   const method = "POST";
   const path = "/a2a";
-  const bodyHash = canonicalBodyHash(params.rawBody);
+  const bodyHashes = bodyHashCandidates(params.rawBody);
 
   if (token) {
     let payload: Awaited<ReturnType<typeof jwtVerify>>["payload"];
@@ -125,11 +131,11 @@ export async function verifyInboundAuth(params: {
     }
 
     const bodyHashClaim = payload.body_hash;
-    if (
-      typeof bodyHashClaim === "string" &&
-      bodyHashClaim !== bodyHash &&
-      bodyHashClaim !== `sha256:${bodyHash}`
-    ) {
+    const acceptedHashes = new Set<string>([
+      ...bodyHashes,
+      ...Array.from(bodyHashes).map((bodyHash) => `sha256:${bodyHash}`),
+    ]);
+    if (typeof bodyHashClaim === "string" && !acceptedHashes.has(bodyHashClaim)) {
       throw new AgentError("AUTH_INVALID", "Token body_hash claim mismatch", false, 401);
     }
 

@@ -14,6 +14,11 @@ from app.utils.log import log_error, log_info
 from app.validation import validate_a2a_forward_envelope
 
 
+def _inbound_debug_enabled() -> bool:
+    value = os.getenv("INBOUND_AUTH_DEBUG", "")
+    return value in ("1", "true", "TRUE", "True")
+
+
 async def health_handler() -> JSONResponse:
     """Lightweight probe endpoint for deploy checks and monitoring."""
     return JSONResponse(
@@ -70,6 +75,15 @@ async def a2a_handler(request: Request) -> JSONResponse:
         else task["task_id"]
     )
     depth = context.get("depth") if isinstance(context.get("depth"), (int, float)) else 0
+    if _inbound_debug_enabled():
+        log_info(
+            "Inbound A2A parsed body",
+            task_id=task["task_id"],
+            correlation_id=correlation_id,
+            parsed_body=parsed_body,
+            raw_body_utf8=raw_body.decode("utf-8", errors="replace"),
+            request_headers=dict(request.headers),
+        )
     try:
         # Reject unauthenticated requests before intent logic executes.
         verify_inbound_auth(
@@ -107,7 +121,7 @@ async def a2a_handler(request: Request) -> JSONResponse:
             task_id=task["task_id"],
             correlation_id=correlation_id,
             code=agent_error.code,
-            message=agent_error.message,
+            error_message=agent_error.message,
         )
 
         return JSONResponse(
