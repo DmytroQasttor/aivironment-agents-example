@@ -27,9 +27,9 @@ Examples are aligned with the platform auth flow:
 - Platform -> Agent:
   - `Authorization: Bearer <platform_jwt>` verified using platform JWKS
 - Agent -> MCP:
-  - simple mode: `Authorization: Bearer agt_sk_...` + `X-Agent-ID`
-  - advanced mode: `X-Agent-ID` + `X-Timestamp` + `X-Signature` + `X-Signature-Algorithm`
-  - auth is transport-level MCP auth, not a tool argument
+  - simple mode: one `Authorization: Bearer <base64url-json-envelope>` per MCP session containing `auth_mode`, `agent_did`, and `agent_secret`
+  - advanced mode: one `Authorization: Bearer <base64url-json-envelope>` per MCP session containing `auth_mode`, `agent_did`, `timestamp`, `signature`, `algorithm`, and signed MCP session fields
+  - auth is transport-level MCP session auth, not a tool argument
 
 High-level flow:
 1. Your agent authenticates itself when it calls platform APIs (`/a2a/send`, MCP tools).
@@ -41,6 +41,7 @@ Each stack keeps one codebase and switches behavior using `AGENT_AUTH_MODE`.
 For simple mode, standardize on `AGENT_SECRET`; `AGENT_API_KEY` remains supported only as a legacy alias.
 
 All three example stacks now use native remote MCP against the Xano stream URL. Xano is the source of truth for tool names, descriptions, and schemas.
+For MCP specifically, advanced auth is session-based because Xano MCP tool execution sees the session bearer, not fresh per-tool auth headers.
 
 ## Repository purpose
 

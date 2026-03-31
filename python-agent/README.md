@@ -9,7 +9,7 @@ Behavior:
 - Verifies inbound platform JWT auth via JWKS.
 - Validates strict `a2a_forward` envelope and `ops.audit` input schema.
 - Uses the OpenAI Agents SDK with native remote MCP for runtime decisions.
-- Signs each outgoing MCP request through the transport auth layer so advanced auth remains request-bound.
+- Establishes one MCP session bearer envelope through the transport auth layer and reuses it for later MCP requests.
 - Validates strict `ops.audit` output schema before returning.
 - Acts as terminal specialist by default, with optional LLM-driven delegation.
 
@@ -29,7 +29,7 @@ This agent uses the same production-style lifecycle expected from external integ
    - OpenAI Agents SDK run with native remote MCP access
    - direct use of the Xano-provided governance MCP tool catalog
 6. `app/openai_mcp.py` creates `MCPServerStreamableHttp` with custom `httpx.Auth`.
-7. The transport auth helpers attach direct auth headers for each outgoing MCP request.
+7. The transport auth helpers establish one MCP session bearer envelope and reuse it for later MCP requests in that session.
 8. Agent returns normalized `a2a_response` success/failure envelope.
 
 This keeps strict I/O contracts for platform testing while still allowing LLM-driven decisions.
@@ -88,11 +88,11 @@ Agent -> Platform/MCP:
 - advanced mode: `X-Agent-ID` + `X-Timestamp` + `X-Signature-Algorithm` + `X-Signature`
 
 Agent -> MCP transport:
-- simple mode: `Authorization` + `X-Agent-ID`
-- advanced mode: `X-Agent-ID` + `X-Timestamp` + `X-Signature-Algorithm` + `X-Signature`
-- The native MCP transport builds these headers automatically for each request while preserving the documented advanced-auth semantics.
+- simple mode: one `Authorization: Bearer <base64url-json-envelope>` for the MCP session
+- advanced mode: one `Authorization: Bearer <base64url-json-envelope>` for the MCP session, signed from the session-establishing MCP request
+- The native MCP transport builds this bearer envelope automatically and reuses it during the MCP session.
 
-Advanced signatures use canonical format:
+Direct API advanced signatures use canonical format:
 
 ```text
 {METHOD}
@@ -102,7 +102,7 @@ Advanced signatures use canonical format:
 sha256:{BODY_HASH_HEX}
 ```
 
-For body hash parity this example canonicalizes JSON by recursively sorting object keys.
+For MCP, the same canonical format is used only to establish the session bearer envelope. For body hash parity this example canonicalizes JSON by recursively sorting object keys.
 
 ## Dependency note
 

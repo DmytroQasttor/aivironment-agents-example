@@ -31,9 +31,9 @@ This agent implements the same runtime pattern expected from real 3rd-party inte
    - OpenAI Agents SDK run with native remote MCP access
    - direct use of the Xano-provided governance MCP tool catalog
 6. For MCP access, `src/openai/mcpServer.ts` creates `MCPServerStreamableHttp` with a custom `fetch`.
-7. The transport auth helpers attach direct auth headers on every outgoing MCP request:
-   - simple mode: `Authorization` + `X-Agent-ID`
-   - advanced mode: fresh request-bound signature headers generated from canonical method/path/body
+7. The transport auth helpers establish one MCP session bearer envelope and reuse it for later MCP requests:
+   - simple mode: bearer envelope with `auth_mode`, `agent_did`, `agent_secret`
+   - advanced mode: bearer envelope with signed session-establishing MCP request fields
 8. Handler returns normalized `a2a_response`:
    - `status: completed` + JSON object `result`
    - or `status: failed` + structured `error`
@@ -151,7 +151,7 @@ Platform -> Agent (`/a2a`):
 - `Authorization: Bearer <platform_jwt>`
 - Agent validates JWT via JWKS and optional claim parity checks.
 
-Agent -> Platform and MCP tools:
+Agent -> Platform direct APIs:
 - `AGENT_AUTH_MODE=simple`
   - `Authorization: Bearer <agent_secret_or_key>`
   - `X-Agent-ID: <agent_did>`
@@ -163,16 +163,14 @@ Agent -> Platform and MCP tools:
 
 Agent -> MCP:
 - `AGENT_AUTH_MODE=simple`
-  - `Authorization: Bearer <agent_secret_or_key>`
-  - `X-Agent-ID: <agent_did>`
+  - `Authorization: Bearer <base64url-json-envelope>`
+  - envelope contains `auth_mode`, `agent_did`, `agent_secret`
 - `AGENT_AUTH_MODE=advanced`
-  - `X-Agent-ID`
-  - `X-Timestamp`
-  - `X-Signature-Algorithm`
-  - `X-Signature`
-- The custom MCP transport builds these headers automatically for each request; the model sees MCP tools directly from the Xano server.
+  - `Authorization: Bearer <base64url-json-envelope>`
+  - envelope contains `auth_mode`, `agent_did`, `timestamp`, `signature`, `algorithm`, `session_method`, `session_path`, `session_body_hash`, `session_target_agent_did`
+- The custom MCP transport builds this bearer envelope once per MCP session and reuses it; the model sees MCP tools directly from the Xano server.
 
-Advanced canonical format:
+Advanced direct API canonical format:
 
 ```text
 {METHOD}
@@ -182,7 +180,7 @@ Advanced canonical format:
 sha256:{BODY_HASH_HEX}
 ```
 
-For body hash parity, this example canonicalizes JSON by recursively sorting object keys before hashing.
+For MCP, the same canonical format is used only to establish the MCP session bearer envelope. For body hash parity, this example canonicalizes JSON by recursively sorting object keys before hashing.
 
 ## Response contract (outbound)
 
@@ -223,4 +221,5 @@ curl http://localhost:3000/health
 ```
 
 Notes:
-- Keep timestamp fresh (5-minute validation window).
+- Direct API advanced auth keeps the short request-bound validation window.
+- MCP advanced auth is session-based and should reconnect before the 15-minute session TTL expires.

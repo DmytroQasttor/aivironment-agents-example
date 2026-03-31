@@ -27,7 +27,7 @@ This agent follows the same production-style lifecycle expected from external in
    - OpenAI Agents SDK run with native remote MCP access
    - MCP route discovery and optional delegation through the server-provided tool catalog
 6. `src/openai/mcpServer.js` creates `MCPServerStreamableHttp` with a custom `fetch`.
-7. The transport auth helpers attach direct auth headers for each outgoing MCP request.
+7. The transport auth helpers establish one MCP session bearer envelope and reuse it for later MCP requests in that session.
 8. Handler returns normalized `a2a_response` success/failure envelope.
 
 This gives deterministic platform contracts while preserving LLM-driven runtime decisions.
@@ -79,11 +79,11 @@ Agent -> Platform/MCP:
 - advanced mode: `X-Agent-ID` + `X-Timestamp` + `X-Signature-Algorithm` + `X-Signature`
 
 Agent -> MCP transport:
-- simple mode: `Authorization` + `X-Agent-ID`
-- advanced mode: `X-Agent-ID` + `X-Timestamp` + `X-Signature-Algorithm` + `X-Signature`
-- The native MCP transport builds these headers automatically for each request and the model sees MCP tools directly from the Xano server.
+- simple mode: one `Authorization: Bearer <base64url-json-envelope>` for the MCP session
+- advanced mode: one `Authorization: Bearer <base64url-json-envelope>` for the MCP session, signed from the session-establishing MCP request
+- The native MCP transport builds this bearer envelope automatically and reuses it during the MCP session.
 
-Advanced signatures use canonical format:
+Direct API advanced signatures use canonical format:
 
 ```text
 {METHOD}
@@ -93,4 +93,4 @@ Advanced signatures use canonical format:
 sha256:{BODY_HASH_HEX}
 ```
 
-For body hash parity this example canonicalizes JSON by recursively sorting object keys.
+For MCP, the same canonical format is used only to establish the session bearer envelope. For body hash parity this example canonicalizes JSON by recursively sorting object keys.

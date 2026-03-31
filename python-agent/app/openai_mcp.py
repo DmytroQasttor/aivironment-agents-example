@@ -5,8 +5,10 @@ from typing import Any
 import httpx
 from agents.mcp import MCPServerStreamableHttp
 
-from app.auth.outbound_auth import build_outbound_auth_headers
+from app.auth.outbound_auth import build_mcp_session_auth_headers
 from app.errors import AgentError
+
+MCP_SESSION_TTL_MS = 15 * 60 * 1000
 
 
 def _mcp_debug_enabled() -> bool:
@@ -122,6 +124,10 @@ def _resolve_request_auth_spec(request: httpx.Request) -> dict[str, Any]:
 
 
 class GovernanceMcpAuth(httpx.Auth):
+    def __init__(self) -> None:
+        self._session_auth_headers: dict[str, str] | None = None
+        self._session_started_ms = 0
+
     def auth_flow(self, request: httpx.Request):
         auth_spec = _resolve_request_auth_spec(request)
         _log_mcp_debug(
@@ -132,17 +138,35 @@ class GovernanceMcpAuth(httpx.Auth):
                 "target_agent_did": auth_spec.get("target_agent_did"),
             },
         )
-        auth_headers = build_outbound_auth_headers(
-            method=str(auth_spec.get("method", "POST")),
-            path=str(auth_spec.get("path", "/")),
-            body=str(auth_spec.get("body", "")),
-            target_agent_did=auth_spec.get("target_agent_did"),
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        should_create_session = (
+            self._session_auth_headers is None
+            or (now_ms - self._session_started_ms) >= MCP_SESSION_TTL_MS
         )
+        if should_create_session:
+            self._session_auth_headers = build_mcp_session_auth_headers(
+                method=str(auth_spec.get("method", "POST")),
+                path=str(auth_spec.get("path", "/")),
+                body=str(auth_spec.get("body", "")),
+                target_agent_did=auth_spec.get("target_agent_did"),
+            )
+            self._session_started_ms = now_ms
+            _log_mcp_debug(
+                "mcp auth session established",
+                {
+                    "method": auth_spec.get("method"),
+                    "path": auth_spec.get("path"),
+                    "session_ttl_ms": MCP_SESSION_TTL_MS,
+                },
+            )
+
+        auth_headers = self._session_auth_headers
         for key, value in auth_headers.items():
             request.headers[key] = value
         _log_mcp_debug(
             "auth header attached",
             {
+                "mcp_session_reused": not should_create_session,
                 "auth_header_present": isinstance(auth_headers.get("Authorization"), str),
                 "auth_header_prefix": (
                     auth_headers.get("Authorization", "")[:16]

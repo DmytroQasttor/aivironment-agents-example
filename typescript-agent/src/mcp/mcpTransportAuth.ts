@@ -1,4 +1,6 @@
-import { buildOutboundAuthHeaders } from "../auth/outboundAuth";
+import { buildMcpSessionAuthHeaders } from "../auth/outboundAuth";
+
+const MCP_SESSION_TTL_MS = 15 * 60 * 1000;
 
 type ToolAuthSpec = {
   method: string;
@@ -226,14 +228,31 @@ async function resolveAuthSpec(input: FetchInput, init?: RequestInit): Promise<T
 }
 
 export function createGovernanceMcpFetch(): typeof fetch {
+  let sessionAuthHeaders: Record<string, string> | null = null;
+  let sessionStartedAtMs = 0;
+
   return async (input, init) => {
     const authSpec = await resolveAuthSpec(input, init);
-    const authHeaders = await buildOutboundAuthHeaders({
-      method: authSpec.method,
-      path: authSpec.path,
-      body: authSpec.body,
-      targetAgentDid: authSpec.targetAgentDid,
-    });
+    const nowMs = Date.now();
+    const shouldCreateSession =
+      sessionAuthHeaders == null || nowMs - sessionStartedAtMs >= MCP_SESSION_TTL_MS;
+
+    if (shouldCreateSession) {
+      sessionAuthHeaders = await buildMcpSessionAuthHeaders({
+        method: authSpec.method,
+        path: authSpec.path,
+        body: authSpec.body,
+        targetAgentDid: authSpec.targetAgentDid,
+      });
+      sessionStartedAtMs = nowMs;
+      logMcpDebug("mcp auth session established", {
+        method: authSpec.method,
+        path: authSpec.path,
+        session_ttl_ms: MCP_SESSION_TTL_MS,
+      });
+    }
+
+    const authHeaders = sessionAuthHeaders as Record<string, string>;
     const finalInit: RequestInit = {
       ...init,
       headers: mergeHeaders(input, init, authHeaders),
@@ -241,6 +260,7 @@ export function createGovernanceMcpFetch(): typeof fetch {
     logMcpDebug("sending request", {
       method: authSpec.method,
       path: authSpec.path,
+      mcp_session_reused: !shouldCreateSession,
       auth_header_present: typeof authHeaders.Authorization === "string",
       auth_header_prefix:
         typeof authHeaders.Authorization === "string" ? authHeaders.Authorization.slice(0, 16) : null,

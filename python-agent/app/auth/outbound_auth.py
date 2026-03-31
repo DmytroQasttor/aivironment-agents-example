@@ -107,3 +107,78 @@ def build_outbound_auth_headers(
             }
         ),
     }
+
+
+def build_mcp_session_auth_headers(
+    method: str,
+    path: str,
+    body: str,
+    target_agent_did: str | None = None,
+) -> dict[str, str]:
+    mode = get_auth_mode()
+    agent_did = require_env("AGENT_DID", "AGENT_DID is required")
+
+    if mode == "simple":
+        api_key = os.getenv("AGENT_SECRET") or os.getenv("AGENT_API_KEY")
+        if not api_key:
+            raise AgentError(
+                "CONFIG_INVALID",
+                "AGENT_SECRET or AGENT_API_KEY is required for simple auth mode",
+                False,
+                500,
+            )
+        return {
+            "Authorization": "Bearer "
+            + _encode_auth_envelope(
+                {
+                    "auth_mode": "simple",
+                    "agent_did": agent_did,
+                    "agent_secret": api_key,
+                }
+            ),
+        }
+
+    alg = os.getenv("AGENT_SIGNATURE_ALGORITHM", "RS256")
+    private_key = require_env(
+        "AGENT_PRIVATE_KEY_PEM",
+        "AGENT_PRIVATE_KEY_PEM is required for advanced auth mode",
+    )
+    timestamp_ms = str(int(datetime.now(timezone.utc).timestamp() * 1000))
+    canonical = _build_canonical_string(
+        method=method,
+        path=path,
+        timestamp_ms=timestamp_ms,
+        body=body,
+        target_agent_did=target_agent_did,
+    )
+    body_hash = _sha256_hex(body)
+
+    payload = {
+        "data": canonical,
+        "canonical": canonical,
+        "iat": datetime.now(timezone.utc),
+        "exp": datetime.now(timezone.utc) + timedelta(seconds=60),
+    }
+    token = jwt.encode(
+        payload=payload,
+        key=private_key,
+        algorithm=alg,
+        headers=({"kid": os.getenv("AGENT_KEY_ID")} if os.getenv("AGENT_KEY_ID") else None),
+    )
+
+    return {
+        "Authorization": "Bearer "
+        + _encode_auth_envelope(
+            {
+                "auth_mode": "advanced",
+                "agent_did": agent_did,
+                "timestamp": timestamp_ms,
+                "signature": token,
+                "algorithm": alg,
+                "session_method": method.upper(),
+                "session_path": path,
+                "session_body_hash": body_hash,
+                "session_target_agent_did": target_agent_did or "",
+            }
+        ),
+    }

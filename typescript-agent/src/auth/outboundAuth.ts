@@ -129,3 +129,68 @@ export async function buildOutboundAuthHeaders(params: {
   };
   return headers;
 }
+
+export async function buildMcpSessionAuthHeaders(params: {
+  method: string;
+  path: string;
+  body: string;
+  targetAgentDid?: string;
+}): Promise<Record<string, string>> {
+  const mode = getAuthMode();
+  const agentDid = process.env.AGENT_DID;
+  if (!agentDid) {
+    throw new AgentError("CONFIG_INVALID", "AGENT_DID is required", false, 500);
+  }
+
+  if (mode === "simple") {
+    const apiKey = process.env.AGENT_SECRET ?? process.env.AGENT_API_KEY;
+    if (!apiKey) {
+      throw new AgentError(
+        "CONFIG_INVALID",
+        "AGENT_SECRET or AGENT_API_KEY is required for simple auth mode",
+        false,
+        500,
+      );
+    }
+
+    return {
+      Authorization: `Bearer ${encodeAuthEnvelope({
+        auth_mode: "simple",
+        agent_did: agentDid,
+        agent_secret: apiKey,
+      })}`,
+    };
+  }
+
+  const alg = process.env.AGENT_SIGNATURE_ALGORITHM ?? "RS256";
+  const kid = process.env.AGENT_KEY_ID;
+  const timestampMs = Date.now().toString();
+  const canonical = buildCanonicalString({
+    method: params.method,
+    path: params.path,
+    timestampMs,
+    targetAgentDid: params.targetAgentDid,
+    body: params.body,
+  });
+  const bodyHash = sha256Hex(params.body);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const signature = await new SignJWT({ data: canonical, canonical })
+    .setProtectedHeader({ alg, ...(kid ? { kid } : {}) })
+    .setIssuedAt(nowSec)
+    .setExpirationTime(nowSec + 60)
+    .sign(await getPrivateKey(alg));
+
+  return {
+    Authorization: `Bearer ${encodeAuthEnvelope({
+      auth_mode: "advanced",
+      agent_did: agentDid,
+      timestamp: timestampMs,
+      signature,
+      algorithm: alg,
+      session_method: params.method.toUpperCase(),
+      session_path: params.path,
+      session_body_hash: bodyHash,
+      session_target_agent_did: params.targetAgentDid ?? "",
+    })}`,
+  };
+}
