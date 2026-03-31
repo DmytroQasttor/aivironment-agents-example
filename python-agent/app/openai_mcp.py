@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -7,22 +8,10 @@ from agents.mcp import MCPServerStreamableHttp
 
 from app.auth.outbound_auth import build_mcp_session_auth_headers
 from app.errors import AgentError
+from app.utils.log import log_mcp_debug
 
+# MCP session TTL must be shorter than the platform's server-side inactivity timeout (10 min).
 MCP_SESSION_TTL_MS = 8 * 60 * 1000
-
-
-def _mcp_debug_enabled() -> bool:
-    value = os.getenv("MCP_DEBUG", "")
-    return value in ("1", "true", "TRUE", "True")
-
-
-def _log_mcp_debug(message: str, data: dict[str, Any] | None = None) -> None:
-    if not _mcp_debug_enabled():
-        return
-    if data is None:
-        print("[mcp-debug]", message)
-        return
-    print("[mcp-debug]", message, json.dumps(data, ensure_ascii=False))
 
 
 def _summarize_auth_headers(auth_headers: dict[str, str]) -> dict[str, str | None]:
@@ -147,7 +136,7 @@ class GovernanceMcpAuth(httpx.Auth):
                 target_agent_did=auth_spec.get("target_agent_did"),
             )
             self._session_started_ms = now_ms
-            _log_mcp_debug(
+            log_mcp_debug(
                 "mcp auth session established",
                 {
                     "method": auth_spec.get("method"),
@@ -161,7 +150,7 @@ class GovernanceMcpAuth(httpx.Auth):
 
     def auth_flow(self, request: httpx.Request):
         auth_spec = _resolve_request_auth_spec(request)
-        _log_mcp_debug(
+        log_mcp_debug(
             "sending request",
             {
                 "method": auth_spec.get("method"),
@@ -172,7 +161,7 @@ class GovernanceMcpAuth(httpx.Auth):
         auth_headers, reused = self._get_session_headers(auth_spec, False)
         for key, value in auth_headers.items():
             request.headers[key] = value
-        _log_mcp_debug(
+        log_mcp_debug(
             "auth header attached",
             {
                 "mcp_session_reused": reused,
@@ -189,7 +178,7 @@ class GovernanceMcpAuth(httpx.Auth):
         )
         response = yield request
         if response.status_code == 401:
-            _log_mcp_debug(
+            log_mcp_debug(
                 "mcp session unauthorized, refreshing",
                 {
                     "method": auth_spec.get("method"),

@@ -1,64 +1,31 @@
 import json
-import os
 from typing import Literal
 
 from agents import Agent, Runner
 from agents.model_settings import ModelSettings
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
+from app.config import get_openai_max_output_tokens, get_openai_model
 from app.errors import AgentError
 from app.openai_mcp import create_governance_mcp_server
-from app.validation import validate_ops_audit_input, validate_ops_audit_output
+from app.utils.log import log_mcp_debug
+from app.validation import validate_ops_audit_input
 
 
+# Output schema enforced by the OpenAI Agents SDK structured output feature.
+# The SDK guarantees the LLM produces a valid object matching this shape,
+# so no additional jsonschema re-validation is needed after the run completes.
 class OpsAuditOutput(BaseModel):
     findings: str
     severity: Literal["low", "medium", "high", "critical"]
     recommendations: list[str]
-    controls_passed: int | None = Field(...)
-
-
-def _get_model() -> str:
-    model = os.getenv("OPENAI_MODEL")
-    if not isinstance(model, str) or not model:
-        raise AgentError("CONFIG_INVALID", "OPENAI_MODEL is required", False, 500)
-    return model
-
-
-def _get_max_output_tokens() -> int:
-    raw = os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "1200")
-    try:
-        parsed = int(raw)
-    except Exception:
-        raise AgentError(
-            "CONFIG_INVALID",
-            "OPENAI_MAX_OUTPUT_TOKENS must be a positive integer",
-            False,
-            500,
-        )
-    if parsed <= 0:
-        raise AgentError(
-            "CONFIG_INVALID",
-            "OPENAI_MAX_OUTPUT_TOKENS must be a positive integer",
-            False,
-            500,
-        )
-    return parsed
-
-
-def _ensure_valid_output(result: dict) -> dict:
-    ok_out, errors_out = validate_ops_audit_output(result)
-    if not ok_out:
-        raise AgentError(
-            "OUTPUT_INVALID",
-            f"Result failed schema validation: {'; '.join(errors_out)}",
-            False,
-            500,
-        )
-    return result
+    # Optional — the LLM may omit this field; platform schema does not require it.
+    controls_passed: int | None = None
 
 
 def _build_prompt(task: dict, payload: dict) -> str:
+    # The full task context (including routing metadata from `context`) is included
+    # so the LLM can apply depth guardrails and access lineage identifiers.
     return "\n".join(
         [
             "Current task context:",
@@ -77,56 +44,46 @@ def _build_prompt(task: dict, payload: dict) -> str:
     )
 
 
-def _mcp_debug_enabled() -> bool:
-    value = os.getenv("MCP_DEBUG", "")
-    return value in ("1", "true", "TRUE", "True")
-
-
-def _log_mcp_debug(message: str, data: dict | None = None) -> None:
-    if not _mcp_debug_enabled():
-        return
-    if data is None:
-        print("[mcp-debug]", message)
-        return
-    print("[mcp-debug]", message, json.dumps(data, ensure_ascii=False))
-
-
 async def _decide_with_llm(task: dict, payload: dict) -> OpsAuditOutput:
     mcp_server = create_governance_mcp_server()
-    _log_mcp_debug("connecting mcp server")
+    log_mcp_debug("connecting mcp server")
     async with mcp_server:
-        _log_mcp_debug("mcp server connected")
+        log_mcp_debug("mcp server connected")
         agent = Agent(
             name="Compliance Risk Auditor",
+            # Agent 03 in the chain: terminal specialist for compliance and risk audit.
+            # It should complete locally and return final audit findings.
+            # Delegation is only appropriate if multi-hop auditing is explicitly required.
             instructions="\n".join(
                 [
                     "You are Compliance Risk Auditor.",
-                    "You may use the connected governance MCP server to decide whether to delegate or complete locally.",
-                    "Prefer the smallest necessary set of tools and avoid exploratory tool calls unless they are required to complete the task safely.",
-                    "Use the route-first governance flow: aiv_get_task_lineage, aiv_list_routes, aiv_get_route_details, then aiv_delegate_task.",
-                    "Do not hardcode targets; discover routes via MCP tools and delegate only via active discovered route.",
+                    "You are the terminal specialist in the chain — your job is to produce final audit findings, not to delegate further.",
+                    "Use the connected governance MCP server only if you need task lineage context (aiv_get_task_lineage) to complete the audit.",
+                    "Do not delegate unless the task explicitly requires multi-hop auditing.",
                     "Depth guardrail: only delegate when context.depth < context.max_depth.",
+                    "Return structured findings with severity, concrete recommendations, and optionally controls_passed.",
                 ]
             ),
-            model=_get_model(),
-            model_settings=ModelSettings(max_tokens=_get_max_output_tokens()),
+            model=get_openai_model(),
+            model_settings=ModelSettings(max_tokens=get_openai_max_output_tokens()),
             mcp_servers=[mcp_server],
             output_type=OpsAuditOutput,
         )
 
         try:
-            _log_mcp_debug(
+            log_mcp_debug(
                 "starting agent run",
                 {"task_id": task["task_id"], "intent": task["intent"]},
             )
             result = await Runner.run(agent, _build_prompt(task, payload))
-            _log_mcp_debug(
+            log_mcp_debug(
                 "agent run finished",
                 {"has_final_output": result.final_output is not None},
             )
         except Exception as exc:
-            _log_mcp_debug("agent run failed", {"error": str(exc)})
+            log_mcp_debug("agent run failed", {"error": str(exc)})
             raise
+
         final_output = result.final_output_as(OpsAuditOutput, raise_if_incorrect_type=True)
         if final_output is None:
             raise AgentError(
@@ -150,5 +107,6 @@ async def run_ops_audit(task: dict) -> dict:
         )
 
     llm_result = await _decide_with_llm(task, payload)
-    result = llm_result.model_dump(exclude_none=True)
-    return _ensure_valid_output(result)
+    # llm_result is already validated by the SDK's output_type schema above.
+    # Return it directly — no additional jsonschema re-check needed.
+    return llm_result.model_dump(exclude_none=True)

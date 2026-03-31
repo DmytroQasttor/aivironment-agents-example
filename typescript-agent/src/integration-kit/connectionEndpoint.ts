@@ -80,9 +80,21 @@ function parseForwardRequest(rawBody: Buffer): ConnectionForwardRequest {
 }
 
 /**
- * Minimal `/a2a` connection endpoint factory.
- * This intentionally excludes business schema validation and intent-specific logic.
- * It only enforces endpoint contract shape and delegates execution to caller-provided function.
+ * Integration kit — minimal /a2a endpoint factory.
+ *
+ * Handles the platform's `a2a_forward` envelope parsing and always returns
+ * a normalized `a2a_response` (success or failure) — this is the contract
+ * the platform expects from every agent endpoint.
+ *
+ * This factory intentionally excludes intent-specific validation and business logic.
+ * It only enforces the envelope shape, then calls the `execute` function you provide.
+ *
+ * When building your own agent:
+ * - Do NOT use this factory directly in production — the real handler in
+ *   src/handlers/a2aHandler.ts adds inbound JWT auth and full schema validation.
+ * - Use this as a reference skeleton when creating a new minimal agent from scratch.
+ * - Your `execute` function receives the parsed `a2a_forward` request and should
+ *   return an object matching your intent's output schema.
  */
 export function createConnectionEndpoint(
   execute: (

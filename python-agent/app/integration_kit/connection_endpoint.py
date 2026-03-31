@@ -47,8 +47,21 @@ def create_connection_endpoint(
     execute: Callable[[dict[str, Any]], Any],
 ):
     """
-    Minimal `/a2a` endpoint factory for integration docs.
-    Does not enforce intent-specific validation.
+    Integration kit — minimal /a2a endpoint factory.
+
+    Handles the platform's `a2a_forward` envelope parsing and always returns
+    a normalized `a2a_response` (success or failure) — this is the contract
+    the platform expects from every agent endpoint.
+
+    This factory intentionally excludes intent-specific validation and business logic.
+    It only enforces the envelope shape, then calls the `execute` function you provide.
+
+    When building your own agent:
+    - Do NOT use this factory directly in production — the real handler in
+      app/handlers.py adds inbound JWT auth and full schema validation.
+    - Use this as a reference skeleton when creating a new minimal agent from scratch.
+    - Your `execute` function receives the parsed a2a_forward dict and should
+      return a dict matching your intent's output schema.
     """
 
     async def connection_endpoint(request: Request) -> JSONResponse:

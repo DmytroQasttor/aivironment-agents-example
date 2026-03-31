@@ -1,21 +1,8 @@
 import { buildMcpSessionAuthHeaders } from "../auth/outboundAuth.js";
+import { logMcpDebug } from "../utils/log.js";
 
+// MCP session TTL must be shorter than the platform's server-side inactivity timeout (10 min).
 const MCP_SESSION_TTL_MS = 8 * 60 * 1000;
-
-function isMcpDebugEnabled() {
-  return process.env.MCP_DEBUG === "1" || process.env.MCP_DEBUG === "true";
-}
-
-function logMcpDebug(message, data) {
-  if (!isMcpDebugEnabled()) {
-    return;
-  }
-  if (data) {
-    console.log("[mcp-debug]", message, JSON.stringify(data));
-    return;
-  }
-  console.log("[mcp-debug]", message);
-}
 
 function summarizeAuthHeaders(authHeaders) {
   return Object.fromEntries(

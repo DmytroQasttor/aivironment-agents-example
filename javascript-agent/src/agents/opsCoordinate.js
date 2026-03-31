@@ -3,11 +3,12 @@ import { z } from "zod";
 import { createGovernanceMcpServer } from "../openai/mcpServer.js";
 import { getOpenAIMaxOutputTokens, getOpenAIModel } from "../openai/openaiClient.js";
 import { AgentError } from "../utils/agentError.js";
-import {
-  validateOpsCoordinateInput,
-  validateOpsCoordinateOutput,
-} from "../validation/schemas.js";
+import { logMcpDebug } from "../utils/log.js";
+import { validateOpsCoordinateInput } from "../validation/schemas.js";
 
+// Output schema enforced by the OpenAI Agents SDK structured output feature.
+// The SDK guarantees the LLM produces a valid object matching this shape,
+// so no additional AJV re-validation is needed after the run completes.
 const opsCoordinateOutputSchema = z.object({
   plan: z.string(),
   actions: z.array(
@@ -18,19 +19,6 @@ const opsCoordinateOutputSchema = z.object({
   ),
   score: z.number().nullable(),
 });
-
-function ensureValidOutput(result) {
-  const outputValidation = validateOpsCoordinateOutput(result);
-  if (!outputValidation.ok) {
-    throw new AgentError(
-      "OUTPUT_INVALID",
-      `Result failed schema validation: ${outputValidation.errors.join("; ")}`,
-      false,
-      500,
-    );
-  }
-  return outputValidation.value;
-}
 
 function buildPrompt(request, payload) {
   return [
@@ -51,21 +39,6 @@ function buildPrompt(request, payload) {
   ].join("\n");
 }
 
-function isMcpDebugEnabled() {
-  return process.env.MCP_DEBUG === "1" || process.env.MCP_DEBUG === "true";
-}
-
-function logMcpDebug(message, data) {
-  if (!isMcpDebugEnabled()) {
-    return;
-  }
-  if (data) {
-    console.log("[mcp-debug]", message, JSON.stringify(data));
-    return;
-  }
-  console.log("[mcp-debug]", message);
-}
-
 async function decideWithLlm({ request, payload }) {
   const mcpServer = createGovernanceMcpServer();
   logMcpDebug("connecting mcp server");
@@ -75,17 +48,20 @@ async function decideWithLlm({ request, payload }) {
   try {
     const agent = new Agent({
       name: "Execution Task Coordinator",
+      // Agent 02 in the chain: converts high-level plans into execution steps and
+      // routes compliance/risk work downstream to a specialist agent (ops.audit).
+      // Unlike Agent 01 (planning focus), this agent's primary job is orchestration:
+      // detect compliance requirements in the objective and delegate them rather than
+      // resolving them locally.
       instructions: [
         "You are Execution Task Coordinator.",
-        "You may use the connected governance MCP server to decide whether to delegate or complete locally.",
-        "Prefer the smallest necessary set of tools and avoid exploratory tool calls unless they are required to complete the task safely.",
+        "Your primary role is orchestration: break down high-level plans into execution steps and route specialist work to downstream agents.",
         "Use the route-first governance flow: aiv_get_task_lineage, aiv_list_routes, aiv_get_route_details, then aiv_delegate_task.",
         "Do not hardcode targets; discover routes via MCP tools and delegate only via active discovered route.",
         "Depth guardrail: only delegate when context.depth < context.max_depth.",
-        "When the task asks for specialist deliverables such as compliance findings, audit evidence, risk review, or remediation recommendations, check specialist routes before finalizing a local answer.",
-        "If a valid downstream specialist route exists for that specialist work, prefer delegating the specialist portion and then synthesizing the result rather than producing the full specialist output locally.",
-        "If the task asks for compliance, audit, risk review, or recommendations and a valid downstream specialist route exists for that work, prefer delegating that specialized work instead of completing everything locally.",
-        "Keep the work local only when no valid route exists, delegation depth is exhausted, or the downstream route does not allow the needed intent.",
+        "When the objective contains compliance requirements, risk assessments, or audit needs, actively look for a downstream specialist route (e.g. ops.audit) and delegate that work rather than completing it locally.",
+        "Prefer delegating compliance and risk work to a specialist agent over producing generic findings yourself.",
+        "Complete locally only when no valid specialist route exists, delegation depth is exhausted, or the task is purely execution-focused with no compliance angle.",
       ].join("\n"),
       model: getOpenAIModel(),
       modelSettings: {
@@ -132,10 +108,11 @@ export async function runOpsCoordinate(request) {
   const payload = inputValidation.value;
   const llmResult = await decideWithLlm({ request, payload });
 
-  const result = {
+  // llmResult is already validated by the SDK's outputType schema above.
+  // Return it directly — no additional schema re-check needed.
+  return {
     plan: llmResult.plan,
     actions: llmResult.actions,
     ...(typeof llmResult.score === "number" ? { score: llmResult.score } : {}),
   };
-  return ensureValidOutput(result);
 }

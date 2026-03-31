@@ -1,5 +1,7 @@
 import { buildMcpSessionAuthHeaders } from "../auth/outboundAuth";
+import { logMcpDebug } from "../utils/log";
 
+// MCP session TTL must be shorter than the platform's server-side inactivity timeout (10 min).
 const MCP_SESSION_TTL_MS = 8 * 60 * 1000;
 
 type ToolAuthSpec = {
@@ -16,21 +18,6 @@ type RpcToolCallParams = {
   name?: unknown;
   arguments?: unknown;
 };
-
-function isMcpDebugEnabled() {
-  return process.env.MCP_DEBUG === "1" || process.env.MCP_DEBUG === "true";
-}
-
-function logMcpDebug(message: string, data?: Record<string, unknown>) {
-  if (!isMcpDebugEnabled()) {
-    return;
-  }
-  if (data) {
-    console.log("[mcp-debug]", message, JSON.stringify(data));
-    return;
-  }
-  console.log("[mcp-debug]", message);
-}
 
 function summarizeAuthHeaders(authHeaders: Record<string, string>) {
   return Object.fromEntries(

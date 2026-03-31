@@ -63,15 +63,21 @@ async function getPrivateKey(alg: string) {
 }
 
 /**
- * Builds outbound auth headers for:
- * - platform `/api/v1/a2a/send`
- * - MCP tool auth fields (embedded by MCP wrapper)
+ * Core envelope builder shared by both outbound and MCP session auth.
+ *
+ * Simple mode produces: { auth_mode, agent_did, agent_secret }
+ * Advanced mode produces: { auth_mode, agent_did, timestamp, signature, algorithm, ...sessionFields }
+ *
+ * MCP session auth passes sessionFields to bind the credential to the specific
+ * request that established the session (session_method, session_path, etc.).
+ * Regular outbound auth omits sessionFields.
  */
-export async function buildOutboundAuthHeaders(params: {
+async function buildEnvelope(params: {
   method: string;
   path: string;
   body: string;
   targetAgentDid?: string;
+  sessionFields?: Record<string, string>;
 }): Promise<Record<string, string>> {
   const mode = getAuthMode();
   const agentDid = process.env.AGENT_DID;
@@ -89,70 +95,6 @@ export async function buildOutboundAuthHeaders(params: {
         500,
       );
     }
-
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${encodeAuthEnvelope({
-        auth_mode: "simple",
-        agent_did: agentDid,
-        agent_secret: apiKey,
-      })}`,
-    };
-    return headers;
-  }
-
-  const alg = process.env.AGENT_SIGNATURE_ALGORITHM ?? "RS256";
-  const kid = process.env.AGENT_KEY_ID;
-  const timestampMs = Date.now().toString();
-  const canonical = buildCanonicalString({
-    method: params.method,
-    path: params.path,
-    timestampMs,
-    targetAgentDid: params.targetAgentDid,
-    body: params.body,
-  });
-
-  const nowSec = Math.floor(Date.now() / 1000);
-  const signature = await new SignJWT({ data: canonical, canonical })
-    .setProtectedHeader({ alg, ...(kid ? { kid } : {}) })
-    .setIssuedAt(nowSec)
-    .setExpirationTime(nowSec + 60)
-    .sign(await getPrivateKey(alg));
-
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${encodeAuthEnvelope({
-      auth_mode: "advanced",
-      agent_did: agentDid,
-      timestamp: timestampMs,
-      signature,
-      algorithm: alg,
-    })}`,
-  };
-  return headers;
-}
-
-export async function buildMcpSessionAuthHeaders(params: {
-  method: string;
-  path: string;
-  body: string;
-  targetAgentDid?: string;
-}): Promise<Record<string, string>> {
-  const mode = getAuthMode();
-  const agentDid = process.env.AGENT_DID;
-  if (!agentDid) {
-    throw new AgentError("CONFIG_INVALID", "AGENT_DID is required", false, 500);
-  }
-
-  if (mode === "simple") {
-    const apiKey = process.env.AGENT_SECRET ?? process.env.AGENT_API_KEY;
-    if (!apiKey) {
-      throw new AgentError(
-        "CONFIG_INVALID",
-        "AGENT_SECRET or AGENT_API_KEY is required for simple auth mode",
-        false,
-        500,
-      );
-    }
-
     return {
       Authorization: `Bearer ${encodeAuthEnvelope({
         auth_mode: "simple",
@@ -172,7 +114,6 @@ export async function buildMcpSessionAuthHeaders(params: {
     targetAgentDid: params.targetAgentDid,
     body: params.body,
   });
-  const bodyHash = sha256Hex(params.body);
   const nowSec = Math.floor(Date.now() / 1000);
   const signature = await new SignJWT({ data: canonical, canonical })
     .setProtectedHeader({ alg, ...(kid ? { kid } : {}) })
@@ -187,10 +128,44 @@ export async function buildMcpSessionAuthHeaders(params: {
       timestamp: timestampMs,
       signature,
       algorithm: alg,
-      session_method: params.method.toUpperCase(),
-      session_path: params.path,
-      session_body_hash: bodyHash,
-      session_target_agent_did: params.targetAgentDid ?? "",
+      ...params.sessionFields,
     })}`,
   };
+}
+
+/**
+ * Outbound auth headers for platform API calls (`/api/v1/a2a/send`).
+ * Also used for direct MCP tool auth injection.
+ */
+export async function buildOutboundAuthHeaders(params: {
+  method: string;
+  path: string;
+  body: string;
+  targetAgentDid?: string;
+}): Promise<Record<string, string>> {
+  return buildEnvelope(params);
+}
+
+/**
+ * MCP session auth headers.
+ * Same as outbound auth but the advanced envelope includes session_* fields
+ * that bind the credential to the request that established the MCP session.
+ * The platform stores this session server-side; the agent refreshes it every
+ * MCP_SESSION_TTL_MS and retries once on 401.
+ */
+export async function buildMcpSessionAuthHeaders(params: {
+  method: string;
+  path: string;
+  body: string;
+  targetAgentDid?: string;
+}): Promise<Record<string, string>> {
+  return buildEnvelope({
+    ...params,
+    sessionFields: {
+      session_method: params.method.toUpperCase(),
+      session_path: params.path,
+      session_body_hash: sha256Hex(params.body),
+      session_target_agent_did: params.targetAgentDid ?? "",
+    },
+  });
 }
