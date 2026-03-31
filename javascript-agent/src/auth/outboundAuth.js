@@ -5,6 +5,21 @@ import { getAgentDid, getAuthMode, requireEnv } from "../config/runtime.js";
 
 let privateKeyPromise = null;
 
+function isMcpDebugEnabled() {
+  return process.env.MCP_DEBUG === "1" || process.env.MCP_DEBUG === "true";
+}
+
+function logMcpDebug(message, data) {
+  if (!isMcpDebugEnabled()) {
+    return;
+  }
+  if (data) {
+    console.log("[mcp-debug]", message, JSON.stringify(data));
+    return;
+  }
+  console.log("[mcp-debug]", message);
+}
+
 function sha256Hex(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
@@ -73,6 +88,15 @@ export async function buildOutboundAuthHeaders({
     timestampMs,
     targetAgentDid,
     body,
+  });
+  logMcpDebug("advanced auth canonical", {
+    method: method.toUpperCase(),
+    path,
+    timestamp: timestampMs,
+    target_agent_did: targetAgentDid ?? null,
+    body,
+    body_hash: sha256Hex(body),
+    canonical,
   });
   const nowSec = Math.floor(Date.now() / 1000);
   const signature = await new SignJWT({ data: canonical, canonical })
