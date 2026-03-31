@@ -1,4 +1,6 @@
 import hashlib
+import base64
+import json
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -10,6 +12,11 @@ from app.errors import AgentError
 
 def _sha256_hex(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _encode_auth_envelope(payload: dict[str, str]) -> str:
+    raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
 
 
 def _build_canonical_string(
@@ -51,8 +58,14 @@ def build_outbound_auth_headers(
                 500,
             )
         return {
-            "Authorization": f"Bearer {api_key}",
-            "Agent-ID": agent_did,
+            "Authorization": "Bearer "
+            + _encode_auth_envelope(
+                {
+                    "auth_mode": "simple",
+                    "agent_did": agent_did,
+                    "agent_secret": api_key,
+                }
+            ),
         }
 
     alg = os.getenv("AGENT_SIGNATURE_ALGORITHM", "RS256")
@@ -83,8 +96,14 @@ def build_outbound_auth_headers(
     )
 
     return {
-        "Agent-ID": agent_did,
-        "Timestamp": timestamp_ms,
-        "Signature": token,
-        "Signature-Algorithm": alg,
+        "Authorization": "Bearer "
+        + _encode_auth_envelope(
+            {
+                "auth_mode": "advanced",
+                "agent_did": agent_did,
+                "timestamp": timestamp_ms,
+                "signature": token,
+                "algorithm": alg,
+            }
+        ),
     }

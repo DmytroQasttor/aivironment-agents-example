@@ -149,8 +149,7 @@ class GovernanceMcpAuth(httpx.Auth):
                     if isinstance(auth_headers.get("Authorization"), str)
                     else None
                 ),
-                "agent_id_header_present": isinstance(auth_headers.get("Agent-ID"), str),
-                "signature_header_present": isinstance(auth_headers.get("Signature"), str),
+                "auth_envelope_mode": "authorization-bearer",
                 "auth_header_names": list(auth_headers.keys()),
                 "auth_header_values": _summarize_auth_headers(auth_headers),
             },

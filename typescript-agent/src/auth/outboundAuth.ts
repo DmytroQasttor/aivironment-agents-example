@@ -24,6 +24,10 @@ function sha256Hex(data: string): string {
   return crypto.createHash("sha256").update(data).digest("hex");
 }
 
+function encodeAuthEnvelope(payload: Record<string, string>) {
+  return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+}
+
 // Canonical string expected by platform advanced verifier.
 function buildCanonicalString(params: {
   method: string;
@@ -87,8 +91,11 @@ export async function buildOutboundAuthHeaders(params: {
     }
 
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${apiKey}`,
-      "Agent-ID": agentDid,
+      Authorization: `Bearer ${encodeAuthEnvelope({
+        auth_mode: "simple",
+        agent_did: agentDid,
+        agent_secret: apiKey,
+      })}`,
     };
     return headers;
   }
@@ -112,10 +119,13 @@ export async function buildOutboundAuthHeaders(params: {
     .sign(await getPrivateKey(alg));
 
   const headers: Record<string, string> = {
-    "Agent-ID": agentDid,
-    Timestamp: timestampMs,
-    Signature: signature,
-    "Signature-Algorithm": alg,
+    Authorization: `Bearer ${encodeAuthEnvelope({
+      auth_mode: "advanced",
+      agent_did: agentDid,
+      timestamp: timestampMs,
+      signature,
+      algorithm: alg,
+    })}`,
   };
   return headers;
 }

@@ -9,6 +9,10 @@ function sha256Hex(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
+function encodeAuthEnvelope(payload) {
+  return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+}
+
 // Canonical string contract expected by platform advanced verifier.
 function buildCanonicalString({ method, path, timestampMs, targetAgentDid, body }) {
   return [
@@ -53,8 +57,11 @@ export async function buildOutboundAuthHeaders({
       );
     }
     return {
-      Authorization: `Bearer ${apiKey}`,
-      "Agent-ID": agentDid,
+      Authorization: `Bearer ${encodeAuthEnvelope({
+        auth_mode: "simple",
+        agent_did: agentDid,
+        agent_secret: apiKey,
+      })}`,
     };
   }
 
@@ -78,9 +85,12 @@ export async function buildOutboundAuthHeaders({
     .sign(await getPrivateKey(alg));
 
   return {
-    "Agent-ID": agentDid,
-    Timestamp: timestampMs,
-    Signature: signature,
-    "Signature-Algorithm": alg,
+    Authorization: `Bearer ${encodeAuthEnvelope({
+      auth_mode: "advanced",
+      agent_did: agentDid,
+      timestamp: timestampMs,
+      signature,
+      algorithm: alg,
+    })}`,
   };
 }
