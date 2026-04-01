@@ -10,81 +10,6 @@ function summarizeAuthHeaders(authHeaders) {
   );
 }
 
-function isPlainObject(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function sortJsonValue(value) {
-  if (Array.isArray(value)) {
-    return value.map((item) => sortJsonValue(item));
-  }
-  if (isPlainObject(value)) {
-    return Object.keys(value)
-      .sort()
-      .reduce((acc, key) => {
-        acc[key] = sortJsonValue(value[key]);
-        return acc;
-      }, {});
-  }
-  return value;
-}
-
-function stableJsonStringify(value) {
-  return JSON.stringify(sortJsonValue(value));
-}
-
-function resolveToolAuthSpec(params) {
-  if (typeof params?.name !== "string" || !isPlainObject(params.arguments)) {
-    return null;
-  }
-
-  const toolArgs = params.arguments;
-  if (params.name === "aiv_list_routes") {
-    return { method: "GET", path: "/api/v1/runtime/routes", body: "" };
-  }
-  if (params.name === "aiv_get_route_details") {
-    const slug = toolArgs.slug;
-    if (typeof slug !== "string" || slug.length === 0) {
-      return null;
-    }
-    return { method: "GET", path: `/api/v1/runtime/routes/${slug}`, body: "" };
-  }
-  if (params.name === "aiv_get_task_lineage") {
-    const taskId = toolArgs.task_id;
-    if (typeof taskId !== "string" || taskId.length === 0) {
-      return null;
-    }
-    return { method: "GET", path: `/api/v1/runtime/task-context/${taskId}`, body: "" };
-  }
-  if (params.name === "aiv_delegate_task") {
-    const targetAgent = toolArgs.target_agent;
-    if (typeof targetAgent !== "string" || targetAgent.length === 0) {
-      return null;
-    }
-    const canonicalBody = {
-      target_agent: targetAgent,
-      intent: toolArgs.intent,
-      payload: toolArgs.payload,
-      connection: toolArgs.connection,
-      ...(isPlainObject(toolArgs.context) ? { context: toolArgs.context } : {}),
-    };
-    return {
-      method: "POST",
-      path: "/api/v1/a2a/send",
-      body: stableJsonStringify(canonicalBody),
-      targetAgentDid: targetAgent,
-    };
-  }
-  if (params.name.startsWith("aiv_")) {
-    return {
-      method: "POST",
-      path: `mcp/${params.name}`,
-      body: stableJsonStringify(toolArgs),
-    };
-  }
-  return null;
-}
-
 async function bodyToString(body) {
   if (body == null) {
     return "";
@@ -152,7 +77,7 @@ function mergeHeaders(input, init, authHeaders) {
   return headers;
 }
 
-async function resolveAuthSpec(input, init) {
+async function resolveRequestSpec(input, init) {
   const url = new URL(requestUrl(input));
   const method = requestMethod(input, init);
   const body = await resolveRequestBody(input, init);
@@ -160,27 +85,12 @@ async function resolveAuthSpec(input, init) {
   try {
     const parsed = JSON.parse(body);
     if (typeof parsed?.method === "string") {
-      const paramsObject = isPlainObject(parsed.params) ? parsed.params : undefined;
-      const toolName =
-        parsed.method === "tools/call" && typeof paramsObject?.name === "string" ? paramsObject.name : undefined;
       logMcpDebug("outgoing rpc request", {
         rpc_method: parsed.method,
-        tool_name: toolName,
       });
     }
-    if (parsed?.method === "tools/call" && isPlainObject(parsed.params)) {
-      const resolved = resolveToolAuthSpec(parsed.params);
-      if (resolved) {
-        logMcpDebug("resolved logical auth spec", {
-          method: resolved.method,
-          path: resolved.path,
-          target_agent_did: resolved.targetAgentDid ?? null,
-        });
-        return resolved;
-      }
-    }
   } catch {
-    // Fall back to raw transport request signing.
+    // Request body is not JSON-RPC. Keep raw transport values.
   }
 
   return {
@@ -194,7 +104,7 @@ export function createGovernanceMcpFetch() {
   let sessionAuthHeaders = null;
   let sessionStartedAtMs = 0;
 
-  async function getSessionHeaders(authSpec, forceRefresh = false) {
+  async function getSessionHeaders(requestSpec, forceRefresh = false) {
     const nowMs = Date.now();
     const shouldCreateSession =
       forceRefresh ||
@@ -202,16 +112,12 @@ export function createGovernanceMcpFetch() {
       nowMs - sessionStartedAtMs >= MCP_SESSION_TTL_MS;
 
     if (shouldCreateSession) {
-      sessionAuthHeaders = await buildMcpSessionAuthHeaders({
-        method: authSpec.method,
-        path: authSpec.path,
-        body: authSpec.body,
-        targetAgentDid: authSpec.targetAgentDid,
-      });
+      // The first request after connect or refresh establishes the MCP session.
+      sessionAuthHeaders = await buildMcpSessionAuthHeaders(requestSpec);
       sessionStartedAtMs = nowMs;
       logMcpDebug("mcp auth session established", {
-        method: authSpec.method,
-        path: authSpec.path,
+        method: requestSpec.method,
+        path: requestSpec.path,
         session_ttl_ms: MCP_SESSION_TTL_MS,
         forced_refresh: forceRefresh,
       });
@@ -224,12 +130,12 @@ export function createGovernanceMcpFetch() {
   }
 
   return async (input, init) => {
-    const authSpec = await resolveAuthSpec(input, init);
-    const firstAttempt = await getSessionHeaders(authSpec, false);
+    const requestSpec = await resolveRequestSpec(input, init);
+    const firstAttempt = await getSessionHeaders(requestSpec, false);
     const authHeaders = firstAttempt.authHeaders;
     logMcpDebug("sending request", {
-      method: authSpec.method,
-      path: authSpec.path,
+      method: requestSpec.method,
+      path: requestSpec.path,
       mcp_session_reused: firstAttempt.reused,
       auth_header_present: typeof authHeaders.Authorization === "string",
       auth_header_prefix:
@@ -244,10 +150,10 @@ export function createGovernanceMcpFetch() {
     });
     if (response.status === 401) {
       logMcpDebug("mcp session unauthorized, refreshing", {
-        method: authSpec.method,
-        path: authSpec.path,
+        method: requestSpec.method,
+        path: requestSpec.path,
       });
-      const retryAttempt = await getSessionHeaders(authSpec, true);
+      const retryAttempt = await getSessionHeaders(requestSpec, true);
       const retryResponse = await fetch(input, {
         ...init,
         headers: mergeHeaders(input, init, retryAttempt.authHeaders),
