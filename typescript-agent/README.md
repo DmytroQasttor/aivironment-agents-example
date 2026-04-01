@@ -60,9 +60,9 @@ This keeps behavior deterministic for platform E2E tests while still allowing LL
 - `src/agents/opsCoordinate.ts` - Blueprint 01 intent logic + native MCP-backed OpenAI loop
 - `src/validation/schemas.ts` - strict input/output schema validation
 - `src/auth/inboundAuth.ts` - simple/advanced inbound auth checks
-- `src/auth/outboundAuth.ts` - simple/advanced outbound headers/signing
+- `src/auth/outboundAuth.ts` - direct platform auth + MCP session envelope builders
 - `src/openai/mcpServer.ts` - native remote MCP server bootstrap for the Xano governance MCP
-- `src/mcp/mcpTransportAuth.ts` - per-request MCP transport header generation for simple/advanced modes
+- `src/mcp/mcpTransportAuth.ts` - MCP session transport wrapper with refresh/retry
 - `src/utils/signature.ts` - timing-safe HMAC verification
 
 ### Integration-kit (for FE/Docs instructions)
@@ -153,13 +153,11 @@ Platform -> Agent (`/a2a`):
 
 Agent -> Platform direct APIs:
 - `AGENT_AUTH_MODE=simple`
-  - `Authorization: Bearer <agent_secret_or_key>`
-  - `X-Agent-ID: <agent_did>`
+  - `Authorization: Bearer <base64url-json-envelope>`
+  - envelope contains `auth_mode`, `agent_did`, `agent_secret`
 - `AGENT_AUTH_MODE=advanced`
-  - `X-Agent-ID`
-  - `X-Timestamp` (epoch ms)
-  - `X-Signature-Algorithm` (default `RS256`)
-  - `X-Signature` (JWS over canonical string)
+  - `Authorization: Bearer <base64url-json-envelope>`
+  - envelope contains `auth_mode`, `agent_did`, `timestamp`, `signature`, `algorithm`
 
 Agent -> MCP:
 - `AGENT_AUTH_MODE=simple`
@@ -168,7 +166,9 @@ Agent -> MCP:
 - `AGENT_AUTH_MODE=advanced`
   - `Authorization: Bearer <base64url-json-envelope>`
   - envelope contains `auth_mode`, `agent_did`, `timestamp`, `signature`, `algorithm`, `session_method`, `session_path`, `session_body_hash`, `session_target_agent_did`
-- The custom MCP transport builds this bearer envelope once per MCP session, the platform stores a server-side MCP session, and the client refreshes proactively with one retry on unauthorized.
+- The custom MCP transport establishes one stored platform session, then refreshes and retries transparently when needed.
+
+Both direct platform APIs and MCP use the same bearer-envelope auth family in this example. The difference is that MCP stores a server-side session after the opening request, while direct platform API calls are verified request by request.
 
 Advanced direct API canonical format:
 

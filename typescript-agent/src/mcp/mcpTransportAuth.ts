@@ -14,11 +14,6 @@ type ToolAuthSpec = {
 type FetchInput = string | URL | Request;
 type FetchBody = RequestInit["body"];
 
-type RpcToolCallParams = {
-  name?: unknown;
-  arguments?: unknown;
-};
-
 function summarizeAuthHeaders(authHeaders: Record<string, string>) {
   return Object.fromEntries(
     Object.entries(authHeaders).map(([key, value]) => [

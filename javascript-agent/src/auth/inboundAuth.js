@@ -17,7 +17,8 @@ function getJwksResolver() {
   return jwksResolver;
 }
 
-// Canonicalizer aligns JSON body hashing with platform verifier behavior.
+// The platform hashes canonical JSON for JWT body binding, so we reproduce the
+// same shape here instead of trusting source formatting.
 function sortKeysDeep(value) {
   if (Array.isArray(value)) {
     return value.map((item) => sortKeysDeep(item));
@@ -48,10 +49,8 @@ function bodyHashCandidates(rawBody) {
   return candidates;
 }
 
-/**
- * Verifies platform -> agent auth envelope.
- * JWT is required and validated against JWKS and expected claims.
- */
+// Platform -> agent auth is always a platform JWT. Optional claims such as
+// method/path/body_hash/source_agent are treated as parity checks when present.
 export async function verifyInboundAuth({ headers, rawBody, taskId, correlationId }) {
   const agentDid = getAgentDid();
   const auth = headers.authorization;

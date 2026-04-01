@@ -45,7 +45,7 @@ def _sort_keys_deep(value):
 
 
 def _body_hash_candidates(raw_body: bytes) -> set[str]:
-    """Compute compatible body-hash candidates for platform JWT verification."""
+    """Compute body hashes that match the platform's canonical JSON hashing."""
     candidates = {hashlib.sha256(raw_body).hexdigest()}
     try:
         parsed = json.loads(raw_body.decode("utf-8"))
@@ -61,7 +61,7 @@ def _body_hash_candidates(raw_body: bytes) -> set[str]:
 def verify_inbound_auth(
     headers: dict, raw_body: bytes, task_id: str, correlation_id: str
 ) -> None:
-    """Verify platform->agent JWT and enforce claim parity checks."""
+    """Verify the platform JWT before any intent logic is allowed to run."""
     _log_inbound_debug(
         "Inbound auth request",
         task_id=task_id,

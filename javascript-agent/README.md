@@ -74,14 +74,15 @@ Platform -> Agent (`/a2a`):
 - `Authorization: Bearer <platform_jwt>`
 - verified against `PLATFORM_JWKS_URL`
 
-Agent -> Platform/MCP:
-- simple mode: `Authorization` + `X-Agent-ID`
-- advanced mode: `X-Agent-ID` + `X-Timestamp` + `X-Signature-Algorithm` + `X-Signature`
+Agent -> Platform direct APIs:
+- simple mode: `Authorization: Bearer <base64url-json-envelope>`
+- advanced mode: `Authorization: Bearer <base64url-json-envelope>`
+- advanced envelopes carry `timestamp`, `signature`, and `algorithm`
 
-Agent -> MCP transport:
+Agent -> MCP:
 - simple mode: one `Authorization: Bearer <base64url-json-envelope>` for the MCP session
 - advanced mode: one `Authorization: Bearer <base64url-json-envelope>` for the MCP session, signed from the session-establishing MCP request
-- The native MCP transport builds this bearer envelope automatically, refreshes it proactively, and retries once on unauthorized.
+- The native MCP transport owns session establishment, reuse, refresh, and one retry on unauthorized.
 
 Direct API advanced signatures use canonical format:
 

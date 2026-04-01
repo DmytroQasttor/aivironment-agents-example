@@ -5,15 +5,12 @@ import { verifyInboundAuth } from "../auth/inboundAuth";
 import { AgentError } from "../utils/agentError";
 import { logError, logInfo } from "../utils/log";
 
-/**
- * Main platform-facing entrypoint.
- * Flow:
- * 1) parse/validate forwarded a2a envelope
- * 2) verify inbound platform JWT
- * 3) run intent handler
- * 4) always return normalized a2a_response
- */
+// `/a2a` is the main platform contract: validate the forwarded envelope,
+// verify platform identity, run the intent, then always return a normalized
+// `a2a_response`.
 export async function a2aHandler(req: Request, res: Response) {
+  // Keep the exact bytes because inbound JWT body_hash checks use the payload
+  // the platform signed, not a re-serialized object.
   const bodyRaw = Buffer.isBuffer(req.body) ? req.body : Buffer.from([]);
   if (bodyRaw.length === 0) {
     return res.status(400).json({
@@ -58,7 +55,7 @@ export async function a2aHandler(req: Request, res: Response) {
     });
   }
   const task = envelopeValidation.value;
-  // Correlation id falls back to task_id to keep logs traceable even when context is partial.
+  // Fall back to task_id so logs remain traceable when context is partial.
   const correlationId =
     typeof task.context?.correlation_id === "string" && task.context.correlation_id.length > 0
       ? task.context.correlation_id
@@ -67,7 +64,7 @@ export async function a2aHandler(req: Request, res: Response) {
     typeof task.context?.depth === "number" ? task.context.depth : 0;
 
   try {
-    // Inbound auth is always platform JWT in current protocol version.
+    // Do not run any business logic until the platform JWT is accepted.
     await verifyInboundAuth({
       headers: req.headers,
       rawBody: bodyRaw,
@@ -83,7 +80,7 @@ export async function a2aHandler(req: Request, res: Response) {
     });
 
     const result = await runAgent(task);
-    // Success envelopes keep the same task_id to preserve lineage on platform side.
+    // Keep the original task_id so lineage stays intact on the platform side.
     return res.json({
       type: "a2a_response",
       task_id: task.task_id,
@@ -91,7 +88,7 @@ export async function a2aHandler(req: Request, res: Response) {
       result,
     });
   } catch (err: unknown) {
-    // All unknown failures are normalized into retryable execution errors.
+    // Unexpected runtime failures are normalized into the platform error shape.
     const agentError =
       err instanceof AgentError
         ? err

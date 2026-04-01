@@ -30,7 +30,8 @@ function getJwksResolver() {
   return jwksResolver;
 }
 
-// Canonical JSON helper used for inbound body_hash parity with platform signer.
+// The platform hashes canonical JSON for JWT body binding, so we reproduce the
+// same shape here instead of trusting source formatting.
 function sortKeysDeep(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map((item) => sortKeysDeep(item));
@@ -63,11 +64,8 @@ function bodyHashCandidates(rawBody: Buffer) {
   return candidates;
 }
 
-/**
- * Verifies platform->agent inbound auth.
- * Current protocol expects JWT bearer for both simple and advanced target agents.
- * Additional claim checks are applied when those claims are present.
- */
+// Platform -> agent auth is always a platform JWT. Optional claims such as
+// method/path/body_hash/source_agent are treated as parity checks when present.
 export async function verifyInboundAuth(params: {
   headers: IncomingHttpHeaders;
   rawBody: Buffer;

@@ -5,15 +5,12 @@ import { buildA2AFailure, buildA2ASuccess } from "../utils/a2aResponse.js";
 import { logError, logInfo } from "../utils/log.js";
 import { validateA2AForwardEnvelope } from "../validation/schemas.js";
 
-/**
- * Platform-facing handler lifecycle:
- * 1) parse + validate envelope
- * 2) verify inbound platform auth
- * 3) run intent logic
- * 4) return normalized a2a_response
- */
+// `/a2a` is the main platform contract: validate the forwarded envelope,
+// verify platform identity, run the intent, then always return a normalized
+// `a2a_response`.
 export async function a2aHandler(req, res) {
-  // Raw body is required because signature verification must use exact bytes.
+  // Keep the exact bytes because inbound JWT body_hash checks use the payload
+  // the platform signed, not a re-serialized object.
   const bodyRaw = Buffer.isBuffer(req.body) ? req.body : Buffer.from([]);
   if (bodyRaw.length === 0) {
     return res
@@ -42,7 +39,7 @@ export async function a2aHandler(req, res) {
     );
   }
   const task = envelopeValidation.value;
-  // Keep traceability even if caller omitted correlation_id.
+  // Fall back to task_id so logs remain traceable when context is partial.
   const correlationId =
     typeof task.context?.correlation_id === "string" && task.context.correlation_id.length > 0
       ? task.context.correlation_id
@@ -50,7 +47,7 @@ export async function a2aHandler(req, res) {
   const depth = typeof task.context?.depth === "number" ? task.context.depth : 0;
 
   try {
-    // Verify platform identity before any business logic.
+    // Do not run any business logic until the platform JWT is accepted.
     await verifyInboundAuth({
       headers: req.headers,
       rawBody: bodyRaw,
@@ -68,7 +65,7 @@ export async function a2aHandler(req, res) {
     const result = await runAgent(task);
     return res.json(buildA2ASuccess(task.task_id, result));
   } catch (err) {
-    // Unknown runtime failures become retryable EXECUTION_FAILED by default.
+    // Unexpected runtime failures are normalized into the platform error shape.
     const agentError =
       err instanceof AgentError
         ? err

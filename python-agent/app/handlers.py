@@ -30,14 +30,9 @@ async def health_handler() -> JSONResponse:
 
 
 async def a2a_handler(request: Request) -> JSONResponse:
-    """
-    Platform-facing request lifecycle:
-    1) parse + validate forwarded envelope
-    2) verify inbound JWT auth
-    3) run intent handler
-    4) return normalized a2a_response
-    """
-    # Use raw bytes because signature verification depends on exact payload bytes.
+    """Validate platform input, verify platform auth, run the intent, return `a2a_response`."""
+    # Keep the exact bytes because inbound JWT body_hash checks use the payload
+    # the platform signed, not a re-serialized object.
     raw_body = await request.body()
     if not raw_body:
         return JSONResponse(
@@ -85,7 +80,7 @@ async def a2a_handler(request: Request) -> JSONResponse:
             request_headers=dict(request.headers),
         )
     try:
-        # Reject unauthenticated requests before intent logic executes.
+        # Do not run any business logic until the platform JWT is accepted.
         verify_inbound_auth(
             headers=dict(request.headers),
             raw_body=raw_body,
@@ -104,7 +99,7 @@ async def a2a_handler(request: Request) -> JSONResponse:
         result = await run_agent(task)
         return JSONResponse(build_a2a_success(task["task_id"], result))
     except Exception as err:
-        # Normalize unknown exceptions into retryable execution errors.
+        # Unexpected runtime failures are normalized into the platform error shape.
         agent_error = (
             err
             if isinstance(err, AgentError)
